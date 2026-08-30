@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "YouTube video analysis request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["request_id", "youtube_url", "start_time", "end_time", "question", "note"],
+  "properties": {
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique value for every execution. Change it even when repeating the same URL."
+    },
+    "youtube_url": {
+      "type": "string",
+      "minLength": 1,
+      "description": "YouTube video URL to fetch."
+    },
+    "start_time": {
+      "type": "string",
+      "description": "Optional HH:MM:SS section start. Must be paired with end_time."
+    },
+    "end_time": {
+      "type": "string",
+      "description": "Optional HH:MM:SS section end. Must be paired with start_time."
+    },
+    "question": {
+      "type": "string",
+      "description": "The user's analysis question. Stored with the Artifact for downstream analysis."
+    },
+    "note": {
+      "type": "string",
+      "description": "Optional operational note. Never put secrets here because this repository is public."
+    }
+  }
+}
