@@ -49,6 +49,11 @@ def main() -> int:
         "--no-playlist",
         "--newline",
         "--write-info-json",
+        # Current YouTube extraction may require external JS challenge solving.
+        # Deno is provided by the GitHub Actions workflow and yt-dlp can obtain
+        # its matching EJS scripts from npm when this component is enabled.
+        "--remote-components",
+        "ejs:npm",
         "--merge-output-format",
         "mp4",
         "-f",
