@@ -1,8 +1,8 @@
 {
-  "request_id": "example-0001",
+  "request_id": "2026-08-30T14-36-00Z-generic-selftest",
   "youtube_url": "https://youtu.be/udrtKw3Fljk",
-  "start_time": "",
-  "end_time": "",
-  "question": "",
-  "note": "Update request_id on every run so even repeated URLs trigger a new fetch."
+  "start_time": "00:00:00",
+  "end_time": "00:00:05",
+  "question": "汎用経路の自己テスト。動画冒頭に何が映っているか確認する。",
+  "note": "Generic reusable ChatGPT bridge self-test"
 }
