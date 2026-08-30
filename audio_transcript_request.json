@@ -1,0 +1,19 @@
+{
+  "model": "large-v3-turbo",
+  "language": "ja",
+  "items": [
+    {
+      "name": "test-a",
+      "youtube_url": "https://youtu.be/udrtKw3Fljk",
+      "start_time": "00:00:00",
+      "end_time": "00:01:30"
+    },
+    {
+      "name": "test-b",
+      "youtube_url": "https://youtu.be/ZhMakZuBU-o?list=RDZhMakZuBU-o",
+      "start_time": "00:00:20",
+      "end_time": "00:01:50"
+    }
+  ],
+  "note": "Independent audio ASR validation; YouTube captions are not used."
+}
