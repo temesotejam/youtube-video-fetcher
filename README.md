@@ -7,9 +7,12 @@ YouTube URL から動画または指定区間を取得し、GitHub Actions Artif
 ## 現在の構成
 
 ```text
+ChatGPT / GitHub Actions UI
+      |
+      | request.json push または workflow_dispatch
+      v
 GitHub repository
       |
-      | workflow_dispatch
       v
 Windows self-hosted runner
       |
@@ -58,7 +61,7 @@ X64
 
 別PCへ移行する場合も、そのPCをこのリポジトリのWindows x64 self-hosted runnerとして登録すれば、ソースコードを手動コピーする必要はありません。
 
-## 動画取得
+## 使い方A: GitHub画面から手動実行
 
 1. Runnerをオンラインにして `Listening for Jobs` の状態にします。
 2. GitHubの **Actions** を開きます。
@@ -67,6 +70,23 @@ X64
 5. `youtube_url` にYouTube URLを入力します。
 6. 必要なら `start_time` と `end_time` を `00:03:20` のように指定します。両方を空欄にすると全編を取得します。
 7. 実行後、Workflow runのArtifactsにある `youtube-video-*` を利用します。
+
+## 使い方B: ChatGPTから起動
+
+`request.json` はChatGPTなど、GitHubへの書き込み権限を持つクライアントからFetcherを起動するための入口です。
+
+```json
+{
+  "youtube_url": "https://youtu.be/...",
+  "start_time": "00:03:20",
+  "end_time": "00:03:40",
+  "note": "optional note"
+}
+```
+
+`request.json` がmainへ更新されると **Fetch YouTube request** が自動起動します。Runnerがオンラインなら、URL取得、Artifact作成、ChatGPT側でのArtifact取得まで一連の経路を実行できます。
+
+2026-08-30の統合テストでは、ChatGPT側から `request.json` を更新して5秒クリップの取得を起動し、生成されたArtifactをChatGPT側へ再取得しました。取得MP4はH.264 1920x1080 + AAC、長さ5.005秒として確認できています。
 
 ## 動作確認済み
 
@@ -87,6 +107,7 @@ X64
 
 - Windows self-hosted runner
 - 手動 `workflow_dispatch`
+- ChatGPT等からの `request.json` push起動
 - YouTube URL入力
 - 全編取得または開始・終了時刻による部分取得
 - yt-dlp
@@ -100,8 +121,8 @@ X64
 
 ## セキュリティ
 
-このリポジトリは現在publicです。Self-hosted runnerをpublic repositoryに接続する場合、第三者由来のコードをRunnerで実行しないことが重要です。現在の本番動画取得Workflowは `workflow_dispatch` のみで起動し、`pull_request` や第三者のforkを実行トリガーにはしていません。
+このリポジトリは現在publicです。Self-hosted runnerをpublic repositoryに接続する場合、第三者由来のコードをRunnerで実行しないことが重要です。現在の実行トリガーは、手動の `workflow_dispatch` と、書き込み権限を持つ利用者がmainの `request.json` を更新した場合に限定しています。`pull_request` や第三者のforkは実行トリガーにしていません。
 
-長時間の無人運用や将来的なPR自動実行を行う場合は、リポジトリをprivateにするか、self-hosted runner用の実行部分をprivate repositoryへ分離する構成を推奨します。
+`request.json` の内容とGit履歴はpublicになるため、非公開URLや秘密情報を入れないでください。長時間の無人運用、非公開URLの利用、将来的なPR自動実行を行う場合は、リポジトリをprivateにするか、self-hosted runner用の実行部分をprivate repositoryへ分離する構成を推奨します。
 
 必要な権利・許可があるコンテンツのみを扱い、適用されるサービス規約や法令に従って利用してください。
