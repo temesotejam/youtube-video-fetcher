@@ -1,0 +1,70 @@
+name: Fetch YouTube transcript
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "transcript_request.json"
+
+permissions:
+  contents: read
+
+jobs:
+  transcript:
+    name: Fetch transcript
+    runs-on: [self-hosted, windows, x64]
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+
+      - name: Create temporary Python environment
+        shell: cmd
+        run: |
+          py -3.12 --version
+          py -3.12 -m venv .venv
+          .venv\Scripts\python.exe -m pip install --upgrade pip
+          .venv\Scripts\python.exe -m pip install --upgrade "yt-dlp[default]"
+
+      - name: Set up Deno locally
+        shell: cmd
+        run: |
+          if exist ".deno" rmdir /s /q ".deno"
+          if exist "deno.zip" del /q "deno.zip"
+          mkdir .deno
+          curl.exe -L --fail --retry 3 -o deno.zip https://github.com/denoland/deno/releases/download/v2.9.6/deno-x86_64-pc-windows-msvc.zip
+          powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath 'deno.zip' -DestinationPath '.deno' -Force"
+          echo %CD%\.deno>>"%GITHUB_PATH%"
+
+      - name: Fetch transcript
+        shell: cmd
+        run: |
+          .venv\Scripts\python.exe scripts\fetch_transcript.py transcript_request.json --output-dir transcript-output
+
+      - name: Show generated files
+        if: always()
+        shell: cmd
+        run: |
+          if exist "transcript-output" dir /-C "transcript-output"
+
+      - name: Upload transcript artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-transcript-${{ github.run_id }}
+          path: transcript-output/
+          if-no-files-found: warn
+          retention-days: 1
+
+      - name: Clean temporary files
+        if: always()
+        shell: cmd
+        run: |
+          if exist "transcript-output" rmdir /s /q "transcript-output"
+          if exist ".venv" rmdir /s /q ".venv"
+          if exist ".deno" rmdir /s /q ".deno"
+          if exist "deno.zip" del /q "deno.zip"
