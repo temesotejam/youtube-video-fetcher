@@ -1,4 +1,4 @@
-name: Transcribe media audio
+name: "Experimental: Transcribe media audio"
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   transcribe:
-    name: Transcribe MP4 audio without YouTube captions
+    name: Experimental MP4 audio ASR
     runs-on: [self-hosted, windows, x64]
     timeout-minutes: 120
     env:
