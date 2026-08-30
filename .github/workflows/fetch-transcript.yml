@@ -1,4 +1,4 @@
-name: Fetch YouTube transcript
+name: "Optional: Fetch YouTube captions"
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   transcript:
-    name: Fetch transcript
+    name: Fetch optional captions
     runs-on: [self-hosted, windows, x64]
     timeout-minutes: 30
 
@@ -40,7 +40,7 @@ jobs:
           powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath 'deno.zip' -DestinationPath '.deno' -Force"
           echo %CD%\.deno>>"%GITHUB_PATH%"
 
-      - name: Fetch transcript
+      - name: Fetch captions
         shell: cmd
         run: |
           .venv\Scripts\python.exe scripts\fetch_transcript.py transcript_request.json --output-dir transcript-output
@@ -51,7 +51,7 @@ jobs:
         run: |
           if exist "transcript-output" dir /-C "transcript-output"
 
-      - name: Upload transcript artifact
+      - name: Upload caption artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
