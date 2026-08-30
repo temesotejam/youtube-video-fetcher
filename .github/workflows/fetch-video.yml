@@ -24,12 +24,15 @@ permissions:
 jobs:
   fetch:
     name: Fetch media
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Windows, X64, youtube-fetcher]
     timeout-minutes: 30
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -41,36 +44,43 @@ jobs:
         with:
           deno-version: v2.x
 
-      - name: Install dependencies
+      - name: Set up FFmpeg
+        uses: AnimMouse/setup-ffmpeg@v1
+
+      - name: Install yt-dlp
+        shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           python -m pip install --upgrade pip
           python -m pip install --upgrade "yt-dlp[default]"
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-          yt-dlp --version
+          python -m yt_dlp --version
           deno --version
-          ffmpeg -version | head -n 1
+          ffmpeg -version | Select-Object -First 1
 
       - name: Fetch video
         id: fetch
-        shell: bash
+        shell: pwsh
         env:
           YOUTUBE_URL: ${{ inputs.youtube_url }}
           START_TIME: ${{ inputs.start_time }}
           END_TIME: ${{ inputs.end_time }}
         run: |
-          set -o pipefail
-          args=("$YOUTUBE_URL" "--output-dir" "output")
-          if [[ -n "$START_TIME" || -n "$END_TIME" ]]; then
-            args+=("--start" "$START_TIME" "--end" "$END_TIME")
-          fi
-          python scripts/fetch_video.py "${args[@]}"
+          $ErrorActionPreference = "Stop"
+          $arguments = @($env:YOUTUBE_URL, "--output-dir", "output")
+          if ($env:START_TIME -or $env:END_TIME) {
+            $arguments += @("--start", $env:START_TIME, "--end", $env:END_TIME)
+          }
+          python scripts/fetch_video.py @arguments
 
       - name: Show generated files
         if: always()
+        shell: pwsh
         run: |
-          echo "Generated files:"
-          find output -maxdepth 1 -type f -printf '%f\t%s bytes\n' 2>/dev/null || true
+          if (Test-Path output) {
+            Get-ChildItem output -File | ForEach-Object {
+              "{0}`t{1} bytes" -f $_.Name, $_.Length
+            }
+          }
 
       - name: Upload result artifact
         if: always()
@@ -81,3 +91,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 1
           compression-level: 0
+
+      - name: Remove downloaded media from runner workspace
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path output) {
+            Remove-Item output -Recurse -Force
+          }
