@@ -1,0 +1,85 @@
+name: Fetch YouTube request
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "request.json"
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    name: Fetch requested media
+    runs-on: [self-hosted, windows, x64]
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+
+      - name: Create temporary Python environment
+        shell: cmd
+        run: |
+          py -3.12 --version
+          py -3.12 -m venv .venv
+          .venv\Scripts\python.exe -m pip install --upgrade pip
+          .venv\Scripts\python.exe -m pip install --upgrade "yt-dlp[default]"
+          .venv\Scripts\python.exe -m yt_dlp --version
+
+      - name: Set up Deno locally
+        shell: cmd
+        run: |
+          if exist ".deno" rmdir /s /q ".deno"
+          if exist "deno.zip" del /q "deno.zip"
+          mkdir .deno
+          curl.exe -L --fail --retry 3 -o deno.zip https://github.com/denoland/deno/releases/download/v2.9.6/deno-x86_64-pc-windows-msvc.zip
+          powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath 'deno.zip' -DestinationPath '.deno' -Force"
+          .deno\deno.exe --version
+          echo %CD%\.deno>>"%GITHUB_PATH%"
+
+      - name: Set up FFmpeg locally
+        shell: cmd
+        run: |
+          if exist ".ffmpeg" rmdir /s /q ".ffmpeg"
+          if exist "ffmpeg.zip" del /q "ffmpeg.zip"
+          mkdir .ffmpeg
+          curl.exe -L --fail --retry 3 -o ffmpeg.zip https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip
+          powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath 'ffmpeg.zip' -DestinationPath '.ffmpeg' -Force"
+          .venv\Scripts\python.exe -c "import os,pathlib; p=next(pathlib.Path('.ffmpeg').rglob('ffmpeg.exe')).parent.resolve(); print(p); open(os.environ['GITHUB_PATH'],'a',encoding='utf-8').write(str(p)+'\n')"
+
+      - name: Fetch requested video
+        shell: cmd
+        run: |
+          .venv\Scripts\python.exe scripts\fetch_request.py request.json --output-dir output
+
+      - name: Show generated files
+        if: always()
+        shell: cmd
+        run: |
+          if exist "output" dir /-C "output"
+
+      - name: Upload result artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-request-${{ github.run_id }}
+          path: output/
+          if-no-files-found: warn
+          retention-days: 1
+          compression-level: 0
+
+      - name: Clean temporary files
+        if: always()
+        shell: cmd
+        run: |
+          if exist "output" rmdir /s /q "output"
+          if exist ".venv" rmdir /s /q ".venv"
+          if exist ".deno" rmdir /s /q ".deno"
+          if exist ".ffmpeg" rmdir /s /q ".ffmpeg"
+          if exist "deno.zip" del /q "deno.zip"
+          if exist "ffmpeg.zip" del /q "ffmpeg.zip"
