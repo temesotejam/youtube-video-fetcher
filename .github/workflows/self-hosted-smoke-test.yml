@@ -11,17 +11,9 @@ permissions:
 
 jobs:
   smoke:
-    name: ${{ matrix.name }}
+    name: self-hosted-smoke
     runs-on: [self-hosted, windows, x64]
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: test-a
-            url: "https://youtu.be/udrtKw3Fljk"
-          - name: test-b
-            url: "https://youtu.be/ZhMakZuBU-o?list=RDZhMakZuBU-o"
+    timeout-minutes: 25
 
     steps:
       - name: Check out repository
@@ -39,36 +31,77 @@ jobs:
           .venv\Scripts\python.exe -m pip install --upgrade "yt-dlp[default]"
           .venv\Scripts\python.exe -m yt_dlp --version
 
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-
-      - name: Fetch progressive MP4
+      - name: Set up Deno locally
         shell: cmd
         run: |
-          if not exist "output-${{ matrix.name }}" mkdir "output-${{ matrix.name }}"
-          .venv\Scripts\python.exe -m yt_dlp --no-playlist --newline --write-info-json -f "18/b[ext=mp4]/b" -o "output-${{ matrix.name }}\video.%%(ext)s" "${{ matrix.url }}"
+          if exist ".deno" rmdir /s /q ".deno"
+          if exist "deno.zip" del /q "deno.zip"
+          mkdir .deno
+          curl.exe -L --fail --retry 3 -o deno.zip https://github.com/denoland/deno/releases/download/v2.9.6/deno-x86_64-pc-windows-msvc.zip
+          powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath 'deno.zip' -DestinationPath '.deno' -Force"
+          .deno\deno.exe --version
+          echo %CD%\.deno>>"%GITHUB_PATH%"
+
+      - name: Fetch test A progressive MP4
+        id: test_a
+        continue-on-error: true
+        shell: cmd
+        run: |
+          if not exist "output-test-a" mkdir "output-test-a"
+          .venv\Scripts\python.exe -m yt_dlp --no-playlist --newline --write-info-json -f "18/b[ext=mp4]/b" -o "output-test-a\video.%%(ext)s" "https://youtu.be/udrtKw3Fljk"
+
+      - name: Fetch test B progressive MP4
+        id: test_b
+        continue-on-error: true
+        shell: cmd
+        run: |
+          if not exist "output-test-b" mkdir "output-test-b"
+          .venv\Scripts\python.exe -m yt_dlp --no-playlist --newline --write-info-json -f "18/b[ext=mp4]/b" -o "output-test-b\video.%%(ext)s" "https://youtu.be/ZhMakZuBU-o?list=RDZhMakZuBU-o"
 
       - name: Show generated files
         if: always()
         shell: cmd
         run: |
-          if exist "output-${{ matrix.name }}" dir /-C "output-${{ matrix.name }}"
+          echo ===== TEST A =====
+          if exist "output-test-a" dir /-C "output-test-a"
+          echo ===== TEST B =====
+          if exist "output-test-b" dir /-C "output-test-b"
 
-      - name: Upload diagnostic artifact
+      - name: Upload test A artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: "self-hosted-smoke-${{ matrix.name }}-${{ github.run_id }}"
-          path: "output-${{ matrix.name }}/"
+          name: "self-hosted-smoke-test-a-${{ github.run_id }}"
+          path: "output-test-a/"
           if-no-files-found: warn
           retention-days: 1
           compression-level: 0
+
+      - name: Upload test B artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "self-hosted-smoke-test-b-${{ github.run_id }}"
+          path: "output-test-b/"
+          if-no-files-found: warn
+          retention-days: 1
+          compression-level: 0
+
+      - name: Report smoke-test result
+        if: always()
+        shell: cmd
+        run: |
+          echo test_a=${{ steps.test_a.outcome }}
+          echo test_b=${{ steps.test_b.outcome }}
+          if /I not "${{ steps.test_a.outcome }}"=="success" exit /b 1
+          if /I not "${{ steps.test_b.outcome }}"=="success" exit /b 1
 
       - name: Clean temporary files
         if: always()
         shell: cmd
         run: |
-          if exist "output-${{ matrix.name }}" rmdir /s /q "output-${{ matrix.name }}"
+          if exist "output-test-a" rmdir /s /q "output-test-a"
+          if exist "output-test-b" rmdir /s /q "output-test-b"
           if exist ".venv" rmdir /s /q ".venv"
+          if exist ".deno" rmdir /s /q ".deno"
+          if exist "deno.zip" del /q "deno.zip"
