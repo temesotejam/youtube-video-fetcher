@@ -1,6 +1,8 @@
 {
+  "request_id": "example-0001",
   "youtube_url": "https://youtu.be/udrtKw3Fljk",
   "start_time": "",
   "end_time": "",
-  "note": "Full-video fetch for transcription test A"
+  "question": "",
+  "note": "Update request_id on every run so even repeated URLs trigger a new fetch."
 }
