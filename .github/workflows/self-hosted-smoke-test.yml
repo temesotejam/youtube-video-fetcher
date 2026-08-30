@@ -1,0 +1,91 @@
+name: Self-hosted YouTube smoke test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/self-hosted-smoke-test.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: ${{ matrix.name }}
+    runs-on: [self-hosted, windows, x64]
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: test-a
+            url: "https://youtu.be/udrtKw3Fljk"
+          - name: test-b
+            url: "https://youtu.be/ZhMakZuBU-o?list=RDZhMakZuBU-o"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install yt-dlp
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade "yt-dlp[default]"
+          python -m yt_dlp --version
+          deno --version
+
+      - name: Fetch progressive MP4
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path "output-${{ matrix.name }}" | Out-Null
+          python -m yt_dlp `
+            --no-playlist `
+            --newline `
+            --write-info-json `
+            -f "18/b[ext=mp4]/b" `
+            -o "output-${{ matrix.name }}\video.%(ext)s" `
+            "${{ matrix.url }}"
+
+      - name: Show generated files
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path "output-${{ matrix.name }}") {
+            Get-ChildItem "output-${{ matrix.name }}" -File | ForEach-Object {
+              "{0}`t{1} bytes" -f $_.Name, $_.Length
+            }
+          }
+
+      - name: Upload diagnostic artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "self-hosted-smoke-${{ matrix.name }}-${{ github.run_id }}"
+          path: "output-${{ matrix.name }}/"
+          if-no-files-found: warn
+          retention-days: 1
+          compression-level: 0
+
+      - name: Clean runner workspace output
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path "output-${{ matrix.name }}") {
+            Remove-Item "output-${{ matrix.name }}" -Recurse -Force
+          }
