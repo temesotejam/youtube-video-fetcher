@@ -1,8 +1,8 @@
 {
-  "request_id": "2026-08-30T14-36-00Z-generic-selftest",
-  "youtube_url": "https://youtu.be/udrtKw3Fljk",
-  "start_time": "00:00:00",
-  "end_time": "00:00:05",
-  "question": "汎用経路の自己テスト。動画冒頭に何が映っているか確認する。",
-  "note": "Generic reusable ChatGPT bridge self-test"
+  "request_id": "2026-08-30T14-42-00Z-newchat-2NJdNKJ9LPM",
+  "youtube_url": "https://youtu.be/2NJdNKJ9LPM",
+  "start_time": "",
+  "end_time": "",
+  "question": "別チャットからでも保存した汎用経路を使えるかの実運用テスト。YouTube動画全体を取得し、実際の動画ファイルを直接解析して内容を把握する。音声内容が重要な場合は必要に応じて文字起こしも行う。",
+  "note": "New-chat reusable bridge test; direct media analysis preferred"
 }
