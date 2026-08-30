@@ -31,14 +31,13 @@ jobs:
           persist-credentials: false
 
       - name: Create temporary Python environment
-        shell: powershell
+        shell: cmd
         run: |
-          $ErrorActionPreference = "Stop"
           py -3.12 --version
           py -3.12 -m venv .venv
-          .\.venv\Scripts\python.exe -m pip install --upgrade pip
-          .\.venv\Scripts\python.exe -m pip install --upgrade "yt-dlp[default]"
-          .\.venv\Scripts\python.exe -m yt_dlp --version
+          .venv\Scripts\python.exe -m pip install --upgrade pip
+          .venv\Scripts\python.exe -m pip install --upgrade "yt-dlp[default]"
+          .venv\Scripts\python.exe -m yt_dlp --version
 
       - name: Set up Deno
         uses: denoland/setup-deno@v2
@@ -46,27 +45,16 @@ jobs:
           deno-version: v2.x
 
       - name: Fetch progressive MP4
-        shell: powershell
+        shell: cmd
         run: |
-          $ErrorActionPreference = "Stop"
-          New-Item -ItemType Directory -Force -Path "output-${{ matrix.name }}" | Out-Null
-          .\.venv\Scripts\python.exe -m yt_dlp `
-            --no-playlist `
-            --newline `
-            --write-info-json `
-            -f "18/b[ext=mp4]/b" `
-            -o "output-${{ matrix.name }}\video.%(ext)s" `
-            "${{ matrix.url }}"
+          if not exist "output-${{ matrix.name }}" mkdir "output-${{ matrix.name }}"
+          .venv\Scripts\python.exe -m yt_dlp --no-playlist --newline --write-info-json -f "18/b[ext=mp4]/b" -o "output-${{ matrix.name }}\video.%%(ext)s" "${{ matrix.url }}"
 
       - name: Show generated files
         if: always()
-        shell: powershell
+        shell: cmd
         run: |
-          if (Test-Path "output-${{ matrix.name }}") {
-            Get-ChildItem "output-${{ matrix.name }}" -File | ForEach-Object {
-              "{0}`t{1} bytes" -f $_.Name, $_.Length
-            }
-          }
+          if exist "output-${{ matrix.name }}" dir /-C "output-${{ matrix.name }}"
 
       - name: Upload diagnostic artifact
         if: always()
@@ -80,11 +68,7 @@ jobs:
 
       - name: Clean temporary files
         if: always()
-        shell: powershell
+        shell: cmd
         run: |
-          if (Test-Path "output-${{ matrix.name }}") {
-            Remove-Item "output-${{ matrix.name }}" -Recurse -Force
-          }
-          if (Test-Path ".venv") {
-            Remove-Item ".venv" -Recurse -Force
-          }
+          if exist "output-${{ matrix.name }}" rmdir /s /q "output-${{ matrix.name }}"
+          if exist ".venv" rmdir /s /q ".venv"
