@@ -7,6 +7,8 @@ on:
       - experimental-cloudflare-free-browser
     paths:
       - ".github/workflows/test-visionos-static.yml"
+      - "cloudflare-free-probe/src/browser-mp4-visionos-probe.js"
+      - "cloudflare-free-probe/wrangler-visionos-probe.jsonc"
 
 permissions:
   contents: read
