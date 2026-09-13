@@ -28,7 +28,7 @@ jobs:
 
       - name: Check Worker syntax
         working-directory: cloudflare-free-probe
-        run: node --check src/browser-mp4-same-origin.js
+        run: node --check src/browser-mp4-probe.js
 
       - name: Deploy Browser MP4 Worker
         id: deploy
@@ -41,3 +41,43 @@ jobs:
 
       - name: Show deployment URL
         run: echo "${{ steps.deploy.outputs.deployment-url }}"
+
+      - name: Download selected 1 MiB video chunks through Browser Run
+        env:
+          PROBE_BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
+          VIDEO_ID: 2NJdNKJ9LPM
+          CHUNK_BYTES: "1048576"
+        run: |
+          set -euo pipefail
+          echo "Waiting for the new Worker to become reachable..."
+          sleep 5
+          mkdir -p output/headers output/chunks
+
+          fetch_chunk() {
+            local index="$1"
+            local start="$2"
+            local out="output/chunks/video.part${index}.bin"
+            local headers="output/headers/video.part${index}.headers.txt"
+            local url="${PROBE_BASE_URL}/chunk/video?v=${VIDEO_ID}&start=${start}&length=${CHUNK_BYTES}"
+            echo "Fetching video chunk ${index}: start=${start}, length=${CHUNK_BYTES}"
+            curl -sS --fail --max-time 90 -D "${headers}" -o "${out}" "${url}"
+            wc -c "${out}"
+            echo "--- response headers ${index} ---"
+            grep -i -E '^(content-type|content-length|x-upstream-content-range|x-chunk-start|x-chunk-end|x-source-total-bytes|x-source-itag|x-browser-run|x-paid-cloudflare-feature):' "${headers}" || true
+            test "$(stat -c%s "${out}")" -eq "${CHUNK_BYTES}"
+          }
+
+          fetch_chunk 000 0
+          fetch_chunk 001 1048576
+          fetch_chunk 004 4194304
+
+          cat output/chunks/video.part000.bin output/chunks/video.part001.bin > output/video-prefix-2m.bin
+          test "$(stat -c%s output/video-prefix-2m.bin)" -eq "$((2 * CHUNK_BYTES))"
+          python3 - <<'PY'
+          from pathlib import Path
+          prefix = Path('output/video-prefix-2m.bin').read_bytes()[:32]
+          print('prefix_hex=' + prefix.hex())
+          print('contains_ftyp=' + str(b'ftyp' in prefix).lower())
+          if b'ftyp' not in prefix:
+              raise SystemExit('MP4 ftyp signature not found in first 32 bytes')
+          PY
