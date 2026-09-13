@@ -1,4 +1,4 @@
-name: Deploy free Cloudflare Browser Run probe
+name: Deploy free Cloudflare MP4 probe
 
 on:
   workflow_dispatch:
@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   deploy:
-    name: Deploy free Browser Run probe
+    name: Deploy free MP4 probe
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -22,32 +22,28 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install Browser Session dependency
-        working-directory: cloudflare-free-probe
-        run: npm install --no-audit --no-fund
-
       - name: Check Worker syntax
         working-directory: cloudflare-free-probe
         run: node --check src/client-probe.js
 
-      - name: Deploy Worker
+      - name: Deploy dedicated MP4 Worker
         id: deploy
         uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: cloudflare-free-probe
-          command: deploy
+          command: deploy --config wrangler-mp4-probe.jsonc
 
       - name: Show deployment URL
         run: echo "${{ steps.deploy.outputs.deployment-url }}"
 
-      - name: Run one worker-origin progressive MP4 probe
+      - name: Run free MP4 stream probe
         env:
           PROBE_BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
         run: |
-          echo "Waiting for Worker propagation..."
-          sleep 10
-          echo "Testing logged-out player clients for a progressive MP4 direct URL; no full download and no Browser Run."
+          echo "Waiting for the new Worker to become reachable..."
+          sleep 5
+          echo "Testing progressive and adaptive MP4 streams; no full download and no Browser Run."
           curl -sS --max-time 75 "${PROBE_BASE_URL}/probe/client?v=2NJdNKJ9LPM"
           echo
