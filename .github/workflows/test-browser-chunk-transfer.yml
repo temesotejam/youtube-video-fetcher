@@ -21,6 +21,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import hashlib
+          import urllib.error
           import urllib.request
 
           url = (
@@ -31,10 +32,17 @@ jobs:
               url,
               headers={"User-Agent": "youtube-video-fetcher-chunk-test/0.1"},
           )
-          with urllib.request.urlopen(req, timeout=60) as response:
-              status = response.status
-              headers = response.headers
-              data = response.read()
+
+          try:
+              with urllib.request.urlopen(req, timeout=60) as response:
+                  status = response.status
+                  headers = response.headers
+                  data = response.read()
+          except urllib.error.HTTPError as exc:
+              body = exc.read()
+              print(f"worker_http_status={exc.code}")
+              print(f"worker_error_body={body.decode('utf-8', errors='replace')[:4096]}")
+              raise SystemExit(1)
 
           print(f"worker_http_status={status}")
           print(f"upstream_status={headers.get('X-Upstream-Status')}")
