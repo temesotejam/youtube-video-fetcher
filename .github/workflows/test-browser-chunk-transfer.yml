@@ -13,11 +13,11 @@ permissions:
 
 jobs:
   test:
-    name: Fetch one 4 MiB query-range MP4 chunk
+    name: Fetch one 4 MiB format 18 MP4 chunk
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Fetch and verify 4 MiB at 4 MiB offset
+      - name: Fetch and verify 4 MiB from progressive format 18
         run: |
           python3 - <<'PY'
           import hashlib
@@ -30,7 +30,7 @@ jobs:
           )
           request = urllib.request.Request(
               url,
-              headers={"User-Agent": "youtube-video-fetcher-query-range-test/0.1"},
+              headers={"User-Agent": "youtube-video-fetcher-format18-test/0.1"},
           )
 
           try:
@@ -48,6 +48,8 @@ jobs:
           print(f"upstream_status={headers.get('X-Upstream-Status')}")
           print(f"upstream_content_range={headers.get('X-Upstream-Content-Range')}")
           print(f"capture_method={headers.get('X-Capture-Method')}")
+          print(f"source_itag={headers.get('X-Source-Itag')}")
+          print(f"has_audio={headers.get('X-Has-Audio')}")
           print(f"chunk_start={headers.get('X-Chunk-Start')}")
           print(f"chunk_end={headers.get('X-Chunk-End')}")
           print(f"source_total={headers.get('X-Source-Total-Bytes')}")
@@ -57,21 +59,21 @@ jobs:
           print(f"first16={data[:16].hex()}")
           print(f"last16={data[-16:].hex()}")
 
-          upstream_status = headers.get("X-Upstream-Status")
           checks = [
               status == 200,
-              upstream_status in ("200", "206"),
-              headers.get("X-Capture-Method") == "same-origin-query-range",
+              headers.get("X-Upstream-Status") == "206",
+              headers.get("X-Capture-Method") == "format18-same-origin-range",
+              headers.get("X-Source-Itag") == "18",
+              headers.get("X-Has-Audio") == "true",
               headers.get("X-Chunk-Start") == "4194304",
               headers.get("X-Chunk-End") == "8388607",
-              headers.get("X-Source-Total-Bytes") == "80955133",
               headers.get_content_type() == "video/mp4",
               len(data) == 4194304,
               bool(data),
               not all(value == 0 for value in data),
           ]
           if not all(checks):
-              raise SystemExit("4 MiB query-range verification failed")
+              raise SystemExit("4 MiB format 18 verification failed")
 
-          print("RESULT=PASS_REAL_4MIB_QUERY_RANGE_MP4_TRANSFER")
+          print("RESULT=PASS_REAL_4MIB_FORMAT18_MP4_TRANSFER")
           PY
