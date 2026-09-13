@@ -1,4 +1,4 @@
-name: Test WEB_EMBEDDED CDP range
+name: Restore original Browser Run worker
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  restore:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -22,54 +22,11 @@ jobs:
         working-directory: cloudflare-free-probe
         run: npm install --no-audit --no-fund
 
-      - name: Switch existing probe to WEB_EMBEDDED_PLAYER
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          p = Path('cloudflare-free-probe/src/browser-mp4-cdp-stream.js')
-          s = p.read_text()
-
-          s = re.sub(
-              r'const ANDROID_VR = \{.*?\n\};',
-              '''const ANDROID_VR = {
-            id: 56,
-            clientName: "WEB_EMBEDDED_PLAYER",
-            clientVersion: "2.20260708.00.00",
-            userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
-          };''',
-              s,
-              count=1,
-              flags=re.S,
-          )
-
-          for line in (
-              '        deviceMake: "Oculus",\n',
-              '        deviceModel: "Quest 3",\n',
-              '        androidSdkVersion: 32,\n',
-              '        osName: "Android",\n',
-              '        osVersion: "12L",\n',
-          ):
-              s = s.replace(line, '')
-
-          s = s.replace(
-              '`https://www.youtube.com/watch?v=${videoId}`',
-              '`https://www.youtube.com/embed/${videoId}?html5=1`',
-          )
-          s = s.replace(
-              'context: { client },',
-              'context: { client, thirdParty: { embedUrl: "https://www.reddit.com/" } },',
-          )
-
-          p.write_text(s)
-          PY
-
-      - name: Check transformed Worker syntax
+      - name: Check stored Worker syntax
         working-directory: cloudflare-free-probe
         run: node --check src/browser-mp4-cdp-stream.js
 
-      - name: Deploy transformed Worker
+      - name: Deploy stored Worker unchanged
         id: deploy
         uses: cloudflare/wrangler-action@v4
         with:
@@ -78,22 +35,20 @@ jobs:
           workingDirectory: cloudflare-free-probe
           command: deploy --config wrangler-mp4-probe.jsonc
 
-      - name: Probe 20 MiB range with WEB_EMBEDDED_PLAYER
+      - name: Verify deployed service metadata
         env:
           BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
         run: |
           set -euo pipefail
           sleep 5
-          mkdir -p output
-          URL="${BASE_URL%/}/cdp/chunk/video?v=2NJdNKJ9LPM&start=20971520&length=262144"
-          CODE=$(curl -sS --max-time 90 -D output/headers.txt -o output/chunk.bin -w "%{http_code}" "$URL")
-          echo "http_code=$CODE"
-          wc -c output/chunk.bin
-          grep -i -E '^(content-type|content-length|x-upstream-content-range|x-source-itag|x-source-total-bytes|x-capture-method|x-cdp-read-count|x-cdp-eof):' output/headers.txt || true
-          if [ "$CODE" != "200" ] || [ "$(stat -c%s output/chunk.bin)" -ne 262144 ]; then
-            python3 - <<'PY'
+          curl -fsS "${BASE_URL%/}/" > service.json
+          python3 - <<'PY'
+          import json
           from pathlib import Path
-          print(Path('output/chunk.bin').read_bytes()[:1200].decode('utf-8', errors='replace'))
+          data = json.loads(Path('service.json').read_text())
+          print('service=', data.get('service'))
+          print('browser_run_used=', data.get('browser_run_used'))
+          print('paid_cloudflare_feature_used=', data.get('paid_cloudflare_feature_used'))
+          if data.get('service') != 'youtube-free-browser-cdp-stream-probe':
+              raise SystemExit('unexpected deployed service')
           PY
-            exit 1
-          fi
