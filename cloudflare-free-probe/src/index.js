@@ -21,6 +21,15 @@ function decodeHtml(text) {
     .replaceAll("&gt;", ">");
 }
 
+function decodeJsEscapes(text) {
+  return text
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
+      String.fromCharCode(Number.parseInt(hex, 16)),
+    )
+    .replaceAll("\\/", "/")
+    .replaceAll("&amp;", "&");
+}
+
 function extractTitle(html) {
   const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
   return match ? decodeHtml(match[1].replace(/\s+/g, " ").trim()) : null;
@@ -43,6 +52,15 @@ function probeSignals(html) {
     googlevideo_reference: lower.includes("googlevideo.com"),
     signature_cipher: html.includes("signatureCipher"),
   };
+}
+
+function extractGooglevideoUrls(html) {
+  const normalized = decodeJsEscapes(html);
+  const matches =
+    normalized.match(
+      /https:\/\/[^"'<>\\\s]+googlevideo\.com\/videoplayback[^"'<>\\\s]*/g,
+    ) || [];
+  return [...new Set(matches)];
 }
 
 function extractBalancedJsonObject(text, fromIndex) {
@@ -224,6 +242,7 @@ export default {
       const signals = probeSignals(html);
       const blocked = signals.bot_challenge || signals.consent_page;
       const playerResponse = extractPlayerResponse(html);
+      const googlevideoUrls = extractGooglevideoUrls(html);
 
       if (url.pathname === "/probe") {
         return json({
@@ -236,14 +255,17 @@ export default {
           page_title: extractTitle(html),
           signals,
           player_response_parsed: Boolean(playerResponse),
+          direct_googlevideo_url_count: googlevideoUrls.length,
           format_summary: playerResponse ? formatSummary(playerResponse) : null,
           interpretation: blocked
             ? "Cloudflare Browser Run reached YouTube but received a bot/consent interstitial."
             : playerResponse?.streamingData
               ? "YouTube page rendered and streamingData was parsed."
-              : signals.yt_initial_player_response || signals.streaming_data
-                ? "Player signals are visible, but the JSON object was not parsed yet."
-                : "YouTube page rendered without an obvious bot page, but player data was not found.",
+              : googlevideoUrls.length > 0
+                ? "YouTube page rendered and direct googlevideo URLs were found in the HTML."
+                : signals.yt_initial_player_response || signals.streaming_data
+                  ? "Player signals are visible, but no direct stream URL was extracted yet."
+                  : "YouTube page rendered without an obvious bot page, but player data was not found.",
           media_downloaded: false,
           local_pc_required: false,
           paid_cloudflare_feature_used_by_this_probe: false,
@@ -264,27 +286,22 @@ export default {
         );
       }
 
-      if (!playerResponse) {
+      const selected = pickDirectProbeFormat(playerResponse);
+      const selectedUrl = selected?.url || googlevideoUrls[0] || null;
+      const extractionSource = selected?.url
+        ? "player-response"
+        : googlevideoUrls[0]
+          ? "html-googlevideo-reference"
+          : null;
+
+      if (!selectedUrl) {
         return json(
           {
-            result: "player-response-not-parsed",
+            result: playerResponse ? "no-direct-stream-url" : "player-response-not-parsed",
             target,
             signals,
-            media_downloaded: false,
-            local_pc_required: false,
-            paid_cloudflare_feature_used_by_this_probe: false,
-          },
-          502,
-        );
-      }
-
-      const selected = pickDirectProbeFormat(playerResponse);
-      if (!selected) {
-        return json(
-          {
-            result: "no-direct-stream-url",
-            target,
-            format_summary: formatSummary(playerResponse),
+            direct_googlevideo_url_count: googlevideoUrls.length,
+            format_summary: playerResponse ? formatSummary(playerResponse) : null,
             media_downloaded: false,
             local_pc_required: false,
             paid_cloudflare_feature_used_by_this_probe: false,
@@ -294,7 +311,7 @@ export default {
       }
 
       const streamStarted = Date.now();
-      const upstream = await fetch(selected.url, {
+      const upstream = await fetch(selectedUrl, {
         headers: {
           Range: `bytes=0-${RANGE_PROBE_BYTES - 1}`,
           Accept: "*/*",
@@ -308,14 +325,18 @@ export default {
         target,
         page_title: playerResponse?.videoDetails?.title || extractTitle(html),
         browser_ms_used: response.headers.get("X-Browser-Ms-Used"),
-        selected_format: {
-          itag: selected.itag ?? null,
-          mime_type: selected.mimeType ?? null,
-          bitrate: selected.bitrate ?? null,
-          width: selected.width ?? null,
-          height: selected.height ?? null,
-          content_length: selected.contentLength ?? null,
-        },
+        extraction_source: extractionSource,
+        direct_googlevideo_url_count: googlevideoUrls.length,
+        selected_format: selected
+          ? {
+              itag: selected.itag ?? null,
+              mime_type: selected.mimeType ?? null,
+              bitrate: selected.bitrate ?? null,
+              width: selected.width ?? null,
+              height: selected.height ?? null,
+              content_length: selected.contentLength ?? null,
+            }
+          : null,
         upstream_status: upstream.status,
         upstream_content_type: upstream.headers.get("Content-Type"),
         upstream_content_length: upstream.headers.get("Content-Length"),
