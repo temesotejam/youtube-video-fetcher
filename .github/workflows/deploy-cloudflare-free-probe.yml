@@ -52,19 +52,33 @@ jobs:
           echo "Waiting for the new Worker to become reachable..."
           sleep 5
           mkdir -p output/headers output/chunks
+          BASE="${PROBE_BASE_URL%/}"
+          echo "base=${BASE}"
 
           fetch_chunk() {
             local index="$1"
             local start="$2"
             local out="output/chunks/video.part${index}.bin"
             local headers="output/headers/video.part${index}.headers.txt"
-            local url="${PROBE_BASE_URL}/chunk/video?v=${VIDEO_ID}&start=${start}&length=${CHUNK_BYTES}"
+            local url="${BASE}/chunk/video?v=${VIDEO_ID}&start=${start}&length=${CHUNK_BYTES}"
             echo "Fetching video chunk ${index}: start=${start}, length=${CHUNK_BYTES}"
-            curl -sS --fail --max-time 90 -D "${headers}" -o "${out}" "${url}"
-            wc -c "${out}"
+            echo "url_path=/chunk/video"
+            curl -sS --fail-with-body --max-time 90 -D "${headers}" -o "${out}" "${url}"
+            local size
+            size="$(stat -c%s "${out}")"
+            echo "bytes=${size}"
             echo "--- response headers ${index} ---"
-            grep -i -E '^(content-type|content-length|x-upstream-content-range|x-chunk-start|x-chunk-end|x-source-total-bytes|x-source-itag|x-browser-run|x-paid-cloudflare-feature):' "${headers}" || true
-            test "$(stat -c%s "${out}")" -eq "${CHUNK_BYTES}"
+            grep -i -E '^(http/|content-type|content-length|x-upstream-content-range|x-chunk-start|x-chunk-end|x-source-total-bytes|x-source-itag|x-browser-run|x-paid-cloudflare-feature):' "${headers}" || true
+            if [ "${size}" -ne "${CHUNK_BYTES}" ]; then
+              echo "Unexpected body size. Body preview:"
+              python3 - <<PY
+          from pathlib import Path
+          p = Path('${out}')
+          data = p.read_bytes()
+          print(data[:1000].decode('utf-8', errors='replace'))
+          PY
+              exit 1
+            fi
           }
 
           fetch_chunk 000 0
