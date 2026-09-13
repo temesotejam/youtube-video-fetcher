@@ -17,19 +17,79 @@ function json(data, status = 200) {
 async function runSameSessionProbe(env, videoId) {
   const target = `https://www.youtube.com/watch?v=${videoId}`;
   const started = Date.now();
-  const browser = await puppeteer.launch(env.BROWSER);
+  const browser = await puppeteer.launch(env.BROWSER, {
+    args: ["--autoplay-policy=no-user-gesture-required"],
+  });
 
   try {
     const page = await browser.newPage();
+    let firstGooglevideoRequest = null;
+    let requestCount = 0;
+
+    let resolveGooglevideoResponse;
+    const googlevideoResponse = new Promise((resolve) => {
+      resolveGooglevideoResponse = resolve;
+      setTimeout(() => resolve(null), 12000);
+    });
+
+    page.on("response", async (response) => {
+      const responseUrl = response.url();
+      if (!responseUrl.includes("googlevideo.com/videoplayback")) return;
+
+      const headers = response.headers();
+      resolveGooglevideoResponse({
+        status: response.status(),
+        content_type: headers["content-type"] || null,
+        content_length: headers["content-length"] || null,
+        content_range: headers["content-range"] || null,
+        host: (() => {
+          try {
+            return new URL(responseUrl).hostname;
+          } catch {
+            return null;
+          }
+        })(),
+      });
+    });
 
     await page.setRequestInterception(true);
     page.on("request", (req) => {
+      const requestUrl = req.url();
       const type = req.resourceType();
-      if (["image", "font", "stylesheet", "media"].includes(type)) {
+
+      if (requestUrl.includes("googlevideo.com/videoplayback")) {
+        requestCount += 1;
+        if (!firstGooglevideoRequest) {
+          firstGooglevideoRequest = {
+            resource_type: type,
+            method: req.method(),
+            host: (() => {
+              try {
+                return new URL(requestUrl).hostname;
+              } catch {
+                return null;
+              }
+            })(),
+          };
+
+          const headers = {
+            ...req.headers(),
+            range: `bytes=0-${RANGE_PROBE_BYTES - 1}`,
+          };
+          req.continue({ headers });
+          return;
+        }
+
         req.abort();
-      } else {
-        req.continue();
+        return;
       }
+
+      if (["image", "font", "stylesheet"].includes(type)) {
+        req.abort();
+        return;
+      }
+
+      req.continue();
     });
 
     const nav = await page.goto(target, {
@@ -43,132 +103,71 @@ async function runSameSessionProbe(env, videoId) {
         { timeout: 8000 },
       );
     } catch {
-      // Continue with whatever the page exposed.
+      // Continue; the player can still issue media requests.
     }
 
-    const pageTitle = await page.title();
-    const inBrowser = await page.evaluate(async (limit) => {
-      const player = globalThis.ytInitialPlayerResponse || null;
-      const streaming = player?.streamingData || {};
-      const formats = Array.isArray(streaming.formats) ? streaming.formats : [];
-      const adaptive = Array.isArray(streaming.adaptiveFormats)
-        ? streaming.adaptiveFormats
-        : [];
-      const all = [...formats, ...adaptive];
-
-      const selected =
-        formats.find((f) => f?.itag === 18 && typeof f?.url === "string") ||
-        formats.find(
-          (f) =>
-            typeof f?.url === "string" &&
-            String(f?.mimeType || "").includes("video/mp4"),
-        ) ||
-        formats.find((f) => typeof f?.url === "string") ||
-        adaptive.find((f) => typeof f?.url === "string") ||
-        null;
-
-      const videoElement = document.querySelector("video");
-      const currentSrc = videoElement?.currentSrc || videoElement?.src || null;
-      const streamUrl = selected?.url || currentSrc || null;
-
-      const base = {
-        player_response_present: Boolean(player),
-        streaming_data_present: Boolean(player?.streamingData),
-        progressive_count: formats.length,
-        adaptive_count: adaptive.length,
-        direct_url_count: all.filter((f) => typeof f?.url === "string").length,
-        signature_cipher_count: all.filter(
-          (f) =>
-            typeof f?.signatureCipher === "string" || typeof f?.cipher === "string",
-        ).length,
-        selected_format: selected
-          ? {
-              itag: selected.itag ?? null,
-              mime_type: selected.mimeType ?? null,
-              bitrate: selected.bitrate ?? null,
-              width: selected.width ?? null,
-              height: selected.height ?? null,
-              content_length: selected.contentLength ?? null,
-            }
-          : null,
-        used_video_current_src_fallback: !selected?.url && Boolean(currentSrc),
+    const streamingSummary = await page.evaluate(() => {
+      const streaming = globalThis.ytInitialPlayerResponse?.streamingData || {};
+      return {
+        keys: Object.keys(streaming),
+        formats_count: Array.isArray(streaming.formats) ? streaming.formats.length : 0,
+        adaptive_count: Array.isArray(streaming.adaptiveFormats)
+          ? streaming.adaptiveFormats.length
+          : 0,
+        has_server_abr_streaming_url:
+          typeof streaming.serverAbrStreamingUrl === "string",
       };
+    });
 
-      if (!streamUrl) {
-        return {
-          ...base,
-          result: "no-direct-stream-url-in-session",
-          fetch_attempted: false,
-        };
-      }
-
-      try {
-        const response = await fetch(streamUrl, {
-          method: "GET",
-          headers: {
-            Range: `bytes=0-${limit - 1}`,
-          },
-          credentials: "include",
-          cache: "no-store",
-        });
-
-        const reader = response.body?.getReader();
-        let received = 0;
-        if (reader) {
-          try {
-            while (received < limit) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              if (!value) continue;
-              received += Math.min(value.byteLength, limit - received);
-              if (received >= limit) break;
-            }
-          } finally {
-            try {
-              await reader.cancel();
-            } catch {
-              // Diagnostic only.
-            }
-          }
+    try {
+      await page.waitForSelector("video", { timeout: 8000 });
+      await page.evaluate(async () => {
+        const video = document.querySelector("video");
+        if (!video) return;
+        video.muted = true;
+        try {
+          await video.play();
+        } catch {
+          // The page may have already started loading media on its own.
         }
+      });
+    } catch {
+      // Wait below for any request that the page already emitted.
+    }
 
-        return {
-          ...base,
-          result: response.ok
-            ? "same-session-range-fetch-succeeded"
-            : "same-session-range-fetch-http-error",
-          fetch_attempted: true,
-          upstream_status: response.status,
-          upstream_content_type: response.headers.get("content-type"),
-          upstream_content_length: response.headers.get("content-length"),
-          upstream_content_range: response.headers.get("content-range"),
-          requested_range_bytes: limit,
-          received_bytes_before_cancel: received,
-          stream_host: new URL(streamUrl).hostname,
-        };
-      } catch (error) {
-        return {
-          ...base,
-          result: "same-session-fetch-threw",
-          fetch_attempted: true,
-          error: error instanceof Error ? error.message : String(error),
-          stream_host: (() => {
-            try {
-              return new URL(streamUrl).hostname;
-            } catch {
-              return null;
-            }
-          })(),
-        };
-      }
-    }, RANGE_PROBE_BYTES);
+    const responseMeta = await googlevideoResponse;
+    const pageTitle = await page.title();
+
+    try {
+      await page.evaluate(() => {
+        const video = document.querySelector("video");
+        if (video) video.pause();
+      });
+    } catch {
+      // Ignore cleanup failures.
+    }
+
+    const rangeHonored =
+      responseMeta?.status === 206 || Boolean(responseMeta?.content_range);
 
     return {
+      result: responseMeta
+        ? rangeHonored
+          ? "same-session-player-range-succeeded"
+          : "same-session-player-request-reached-googlevideo"
+        : firstGooglevideoRequest
+          ? "googlevideo-request-seen-no-response"
+          : "no-googlevideo-request-seen",
       target,
       page_http_status: nav?.status() ?? null,
       page_title: pageTitle,
       elapsed_ms: Date.now() - started,
-      ...inBrowser,
+      streaming_data: streamingSummary,
+      googlevideo_request_count: requestCount,
+      first_googlevideo_request: firstGooglevideoRequest,
+      first_googlevideo_response: responseMeta,
+      forced_range: `bytes=0-${RANGE_PROBE_BYTES - 1}`,
+      range_honored: rangeHonored,
       stream_url_returned_to_client: false,
       full_media_downloaded: false,
       local_pc_required: false,
