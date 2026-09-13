@@ -1,6 +1,7 @@
 const DEFAULT_VIDEO_ID = "2NJdNKJ9LPM";
 const VIDEO_ID_RE = /^[A-Za-z0-9_-]{11}$/;
 const RANGE_PROBE_BYTES = 64 * 1024;
+const DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36";
 
 const CLIENTS = [
   {
@@ -9,6 +10,8 @@ const CLIENTS = [
     clientName: "WEB_EMBEDDED_PLAYER",
     clientVersion: "2.20260708.00.00",
     origin: "https://www.youtube.com",
+    configUrl: (id) => `https://www.youtube.com/embed/${id}?html5=1`,
+    configUa: DESKTOP_UA,
     thirdParty: { embedUrl: "https://www.reddit.com/" },
   },
   {
@@ -18,6 +21,24 @@ const CLIENTS = [
     clientVersion: "2.20260708.05.00",
     origin: "https://m.youtube.com",
     userAgent: "Mozilla/5.0 (iPad; CPU OS 16_7_10 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1,gzip(gfe)",
+    configUrl: (id) => `https://m.youtube.com/watch?v=${id}`,
+  },
+  {
+    key: "android_vr",
+    id: 28,
+    clientName: "ANDROID_VR",
+    clientVersion: "1.65.10",
+    origin: "https://www.youtube.com",
+    userAgent: "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
+    configUrl: (id) => `https://www.youtube.com/embed/${id}?html5=1`,
+    configUa: DESKTOP_UA,
+    extra: {
+      deviceMake: "Oculus",
+      deviceModel: "Quest 3",
+      androidSdkVersion: 32,
+      osName: "Android",
+      osVersion: "12L",
+    },
   },
   {
     key: "visionos",
@@ -26,6 +47,8 @@ const CLIENTS = [
     clientVersion: "1.02",
     origin: "https://www.youtube.com",
     userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+    configUrl: (id) => `https://www.youtube.com/embed/${id}?html5=1`,
+    configUa: DESKTOP_UA,
     extra: {
       deviceMake: "Apple",
       deviceModel: "RealityDevice17,1",
@@ -55,11 +78,10 @@ function decodeJsString(value) {
     : null;
 }
 
-async function harvestConfig(videoId) {
-  const url = `https://www.youtube.com/embed/${videoId}?html5=1`;
-  const response = await fetch(url, {
+async function harvestConfig(videoId, def) {
+  const response = await fetch(def.configUrl(videoId), {
     headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+      "User-Agent": def.configUa || def.userAgent || DESKTOP_UA,
       Accept: "text/html,*/*",
     },
     redirect: "follow",
@@ -70,10 +92,15 @@ async function harvestConfig(videoId) {
     html.match(/"VISITOR_DATA":"([^"]+)"/)?.[1] ||
     html.match(/"visitorData":"([^"]+)"/)?.[1] ||
     null;
+  const stsRaw =
+    html.match(/"STS":(\d+)/)?.[1] ||
+    html.match(/"signatureTimestamp":(\d+)/)?.[1] ||
+    null;
   const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.trim() || null;
   return {
     apiKey: decodeJsString(apiKey),
     visitorData: decodeJsString(visitorData),
+    sts: stsRaw ? Number(stsRaw) : null,
     page_http_status: response.status,
     page_title: title,
     page_bytes: new TextEncoder().encode(html).byteLength,
@@ -115,7 +142,7 @@ function selectProgressiveMp4(player) {
   );
 }
 
-async function requestPlayer(apiKey, visitorData, videoId, def) {
+async function requestPlayer(config, videoId, def) {
   const client = {
     clientName: def.clientName,
     clientVersion: def.clientVersion,
@@ -123,7 +150,7 @@ async function requestPlayer(apiKey, visitorData, videoId, def) {
     gl: "US",
     ...(def.userAgent ? { userAgent: def.userAgent } : {}),
     ...(def.extra || {}),
-    ...(visitorData ? { visitorData } : {}),
+    ...(config.visitorData ? { visitorData: config.visitorData } : {}),
   };
   const headers = {
     "Content-Type": "application/json",
@@ -131,10 +158,13 @@ async function requestPlayer(apiKey, visitorData, videoId, def) {
     "X-YouTube-Client-Version": def.clientVersion,
     Origin: def.origin,
   };
-  if (visitorData) headers["X-Goog-Visitor-Id"] = visitorData;
+  if (config.visitorData) headers["X-Goog-Visitor-Id"] = config.visitorData;
   if (def.userAgent) headers["User-Agent"] = def.userAgent;
 
-  const response = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${encodeURIComponent(apiKey)}&prettyPrint=false`, {
+  const contentPlaybackContext = { html5Preference: "HTML5_PREF_WANTS" };
+  if (config.sts) contentPlaybackContext.signatureTimestamp = config.sts;
+
+  const response = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${encodeURIComponent(config.apiKey)}&prettyPrint=false`, {
     method: "POST",
     headers,
     body: JSON.stringify({
@@ -143,15 +173,14 @@ async function requestPlayer(apiKey, visitorData, videoId, def) {
         ...(def.thirdParty ? { thirdParty: def.thirdParty } : {}),
       },
       videoId,
+      playbackContext: { contentPlaybackContext },
       contentCheckOk: true,
       racyCheckOk: true,
     }),
   });
   const text = await response.text();
   let player = null;
-  try {
-    player = JSON.parse(text);
-  } catch {}
+  try { player = JSON.parse(text); } catch {}
   return { response, player };
 }
 
@@ -190,26 +219,28 @@ async function rangeProbe(def, format) {
 
 async function run(videoId) {
   const started = Date.now();
-  const harvested = await harvestConfig(videoId);
-  if (!harvested.apiKey) {
-    return {
-      result: "innertube-api-key-not-found",
-      harvested,
-      full_media_downloaded: false,
-      local_pc_required: false,
-      paid_cloudflare_feature_used_by_this_probe: false,
-    };
-  }
-
   const clients = [];
   let winner = null;
+
   for (const def of CLIENTS) {
     try {
-      const { response, player } = await requestPlayer(harvested.apiKey, harvested.visitorData, videoId, def);
+      const config = await harvestConfig(videoId, def);
+      if (!config.apiKey) {
+        clients.push({ client: def.key, config: { ...config, apiKey: undefined, visitorData: undefined }, error: "innertube-api-key-not-found" });
+        continue;
+      }
+      const { response, player } = await requestPlayer(config, videoId, def);
       const format = selectProgressiveMp4(player);
       const probe = format ? await rangeProbe(def, format) : null;
       const item = {
         client: def.key,
+        config: {
+          page_http_status: config.page_http_status,
+          page_title: config.page_title,
+          visitor_data_present: Boolean(config.visitorData),
+          signature_timestamp_present: Boolean(config.sts),
+          bot_challenge: config.bot_challenge,
+        },
         player_http_status: response.status,
         summary: summarize(player),
         selected_progressive_mp4: format
@@ -234,13 +265,6 @@ async function run(videoId) {
   return {
     result: winner ? "progressive-mp4-range-succeeded-from-worker-origin" : "no-downloadable-progressive-mp4-found",
     elapsed_ms: Date.now() - started,
-    harvested: {
-      page_http_status: harvested.page_http_status,
-      page_title: harvested.page_title,
-      page_bytes: harvested.page_bytes,
-      visitor_data_present: Boolean(harvested.visitorData),
-      bot_challenge: harvested.bot_challenge,
-    },
     clients,
     winning_client: winner?.client || null,
     stream_url_returned_to_client: false,
