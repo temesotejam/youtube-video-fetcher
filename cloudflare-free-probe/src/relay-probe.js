@@ -1,5 +1,7 @@
 const TEST_VIDEO_ID = "2NJdNKJ9LPM";
 const RANGE_PROBE_BYTES = 64 * 1024;
+const VIDEO_RANGE_OFFSETS = [0, 4 * 1024 * 1024, 8 * 1024 * 1024];
+const AUDIO_RANGE_OFFSETS = [0, 4 * 1024 * 1024];
 const DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36";
 const ANDROID_VR = {
   id: 28,
@@ -26,6 +28,28 @@ function decodeJsString(value) {
         .replaceAll("\\u002f", "/")
         .replaceAll("\\/", "/")
     : null;
+}
+
+async function readAtMost(body, limit) {
+  if (!body) return 0;
+  const reader = body.getReader();
+  let total = 0;
+  try {
+    while (total < limit) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += Math.min(value.byteLength, limit - total);
+      if (total >= limit) break;
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // Diagnostic only.
+    }
+  }
+  return total;
 }
 
 async function harvestConfig(videoId) {
@@ -156,14 +180,78 @@ async function probeFormat(format) {
     },
     redirect: "follow",
   });
-  const body = await response.arrayBuffer();
+  const bytes = response.ok
+    ? await readAtMost(response.body, RANGE_PROBE_BYTES)
+    : 0;
   return {
     status: response.status,
     content_type: response.headers.get("Content-Type"),
     content_length: response.headers.get("Content-Length"),
     content_range: response.headers.get("Content-Range"),
-    bytes: body.byteLength,
-    success: response.ok && body.byteLength > 0,
+    bytes,
+    success: response.ok && bytes > 0,
+  };
+}
+
+async function probeRangeAt(format, start) {
+  const total = Number(format.contentLength || 0);
+  if (total && start >= total) {
+    return { start, skipped: true, reason: "offset-beyond-content-length" };
+  }
+
+  const end = total
+    ? Math.min(start + RANGE_PROBE_BYTES - 1, total - 1)
+    : start + RANGE_PROBE_BYTES - 1;
+  const response = await fetch(format.url, {
+    headers: {
+      Range: `bytes=${start}-${end}`,
+      "User-Agent": ANDROID_VR.userAgent,
+      Accept: "*/*",
+    },
+    redirect: "follow",
+  });
+
+  const bytes = response.ok
+    ? await readAtMost(response.body, RANGE_PROBE_BYTES)
+    : 0;
+  const contentRange = response.headers.get("Content-Range");
+  const expectedPrefix = `bytes ${start}-`;
+  const success =
+    response.status === 206 &&
+    Boolean(contentRange?.startsWith(expectedPrefix)) &&
+    bytes > 0;
+
+  return {
+    start,
+    end,
+    status: response.status,
+    content_type: response.headers.get("Content-Type"),
+    content_length: response.headers.get("Content-Length"),
+    content_range: contentRange,
+    bytes,
+    success,
+  };
+}
+
+async function probeSequentialRanges(format, offsets) {
+  const results = [];
+  for (const offset of offsets) {
+    try {
+      results.push(await probeRangeAt(format, offset));
+    } catch (error) {
+      results.push({
+        start: offset,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  const checked = results.filter((item) => !item.skipped);
+  return {
+    same_resolved_url_reused: true,
+    checked_count: checked.length,
+    all_success: checked.length > 0 && checked.every((item) => item.success),
+    results,
   };
 }
 
@@ -214,7 +302,7 @@ export default {
         test_video_id: TEST_VIDEO_ID,
         browser_run_used: false,
         paid_cloudflare_feature_used: false,
-        endpoints: ["/probe", "/relay/video", "/relay/audio"],
+        endpoints: ["/probe", "/probe/ranges", "/relay/video", "/relay/audio"],
       });
     }
 
@@ -238,6 +326,30 @@ export default {
               : "adaptive-mp4-relay-not-ready",
           video: { format: streamMeta(streams.video), probe: videoProbe },
           audio: { format: streamMeta(streams.audio), probe: audioProbe },
+          full_media_downloaded: false,
+          local_pc_required: false,
+          browser_run_used: false,
+          paid_cloudflare_feature_used: false,
+        });
+      }
+
+      if (url.pathname === "/probe/ranges") {
+        const videoRanges = await probeSequentialRanges(
+          streams.video,
+          VIDEO_RANGE_OFFSETS,
+        );
+        const audioRanges = await probeSequentialRanges(
+          streams.audio,
+          AUDIO_RANGE_OFFSETS,
+        );
+        return json({
+          result:
+            videoRanges.all_success && audioRanges.all_success
+              ? "same-worker-nonzero-ranges-succeeded"
+              : "same-worker-nonzero-ranges-failed",
+          resolved_streams_once: true,
+          video: { format: streamMeta(streams.video), ranges: videoRanges },
+          audio: { format: streamMeta(streams.audio), ranges: audioRanges },
           full_media_downloaded: false,
           local_pc_required: false,
           browser_run_used: false,
