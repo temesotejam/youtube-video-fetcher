@@ -28,7 +28,7 @@ jobs:
 
       - name: Check Worker syntax
         working-directory: cloudflare-free-probe
-        run: node --check src/browser-mp4-probe.js
+        run: node --check src/browser-mp4-same-origin.js
 
       - name: Deploy Browser MP4 Worker
         id: deploy
@@ -68,7 +68,7 @@ jobs:
           SIZE="$(stat -c%s "${OUT}" 2>/dev/null || echo 0)"
           echo "bytes=${SIZE}"
           echo "--- response headers ---"
-          grep -i -E '^(http/|content-type|content-length|x-upstream-content-range|x-chunk-start|x-chunk-end|x-source-total-bytes|x-source-itag|x-browser-run|x-paid-cloudflare-feature):' "${HEADERS}" || true
+          grep -i -E '^(http/|content-type|content-length|x-upstream-content-range|x-chunk-start|x-chunk-end|x-source-total-bytes|x-source-itag|x-capture-method|x-piece-count|x-piece-bytes|x-paid-cloudflare-feature):' "${HEADERS}" || true
           if [ "${CURL_STATUS}" -ne 0 ] || [ "${HTTP_CODE}" != "200" ] || [ "${SIZE}" -ne "${CHUNK_BYTES}" ]; then
             echo "Unexpected response body preview:"
             python3 - <<PY
@@ -82,7 +82,7 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           data = Path('output/chunks/video.nonzero-64k.bin').read_bytes()
-          print('chunk_sha256_prefix_check_bytes=' + str(len(data)))
+          print('chunk_bytes=' + str(len(data)))
           print('first16_hex=' + data[:16].hex())
           if len(data) != 65536:
               raise SystemExit('wrong chunk length')
