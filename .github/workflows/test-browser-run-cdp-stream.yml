@@ -1,0 +1,56 @@
+name: Test Browser Run CDP stream
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cdp-stream-probe:
+    name: Probe one MP4 range via CDP stream
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      YOUTUBE_VIDEO_ID: 2NJdNKJ9LPM
+      PROBE_START: "4194304"
+      PROBE_LENGTH: "65536"
+      CDP_READ_SIZE: "16384"
+      BROWSER_RUN_KEEP_ALIVE_MS: "600000"
+      OUTPUT_DIR: output
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_BROWSER_TOKEN: ${{ secrets.CLOUDFLARE_BROWSER_TOKEN }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install CDP client
+        run: npm install --no-audit --no-fund puppeteer-core@24
+
+      - name: Check probe syntax
+        run: node --check scripts/browser_run_cdp_stream_probe.mjs
+
+      - name: Run one 64 KiB CDP stream probe
+        run: node scripts/browser_run_cdp_stream_probe.mjs
+
+      - name: Verify output
+        run: |
+          test -s output/cdp-range-probe.json
+          test "$(stat -c%s output/cdp-video-nonzero-64k.bin)" -eq 65536
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          summary = json.loads(Path('output/cdp-range-probe.json').read_text())
+          print('result=' + summary['result'])
+          print('content_range=' + summary['probe']['content_range'])
+          print('saved_bytes=' + str(summary['probe']['saved_bytes']))
+          print('sha256=' + summary['probe']['sha256'])
+          PY
