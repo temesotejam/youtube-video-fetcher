@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "youtube-free-browser-probe",
-  "main": "src/browser-mp4-same-origin.js",
+  "main": "src/browser-mp4-batch.js",
   "compatibility_date": "2026-09-13",
   "workers_dev": true,
   "browser": {
