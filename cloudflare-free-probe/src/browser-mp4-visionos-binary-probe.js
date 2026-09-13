@@ -145,7 +145,6 @@ async function resolveVideo(browser) {
           videos.find((format) => Number(format?.height || 0) === 720) || videos[0] || null;
 
         return {
-          page_status: nav?.status?.() ?? null,
           player_http_status: response.status,
           playability_status: data?.playabilityStatus?.status || null,
           playability_reason: data?.playabilityStatus?.reason || null,
