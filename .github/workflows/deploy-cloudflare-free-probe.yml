@@ -38,20 +38,12 @@ jobs:
       - name: Show deployment URL
         run: echo "${{ steps.deploy.outputs.deployment-url }}"
 
-      - name: Verify MP4 relay readiness
+      - name: Probe nonzero ranges in one Worker invocation
         env:
           PROBE_BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
         run: |
           echo "Waiting for the new Worker to become reachable..."
           sleep 5
-          echo "Testing video/audio MP4 relay ranges; no full download and no Browser Run."
-          curl -sS --fail-with-body --max-time 75 "${PROBE_BASE_URL}/probe?v=2NJdNKJ9LPM"
-          echo
-
-      - name: Probe nonzero ranges in one Worker invocation
-        env:
-          PROBE_BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
-        run: |
           echo "Resolving MP4 URLs once, then probing 0/4/8 MiB within one Worker request."
           curl -sS --fail-with-body --max-time 75 "${PROBE_BASE_URL}/probe/ranges?v=2NJdNKJ9LPM"
           echo
