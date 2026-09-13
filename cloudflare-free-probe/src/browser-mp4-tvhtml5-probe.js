@@ -56,8 +56,9 @@ function publicFormat(format) {
   };
 }
 
-async function openYoutubePage(browser, videoId) {
+async function openTvPage(browser) {
   const page = await browser.newPage();
+  await page.setUserAgent(TV_CLIENT.userAgent);
   await page.setRequestInterception(true);
   page.on("request", (request) => {
     if (["image", "font", "stylesheet", "media"].includes(request.resourceType())) {
@@ -67,15 +68,18 @@ async function openYoutubePage(browser, videoId) {
     }
   });
 
-  const nav = await page.goto(`https://www.youtube.com/watch?v=${videoId}`, {
+  const nav = await page.goto("https://www.youtube.com/tv", {
     waitUntil: "domcontentloaded",
     timeout: 20000,
   });
 
   await page
-    .waitForFunction(() => Boolean(globalThis.ytcfg?.get?.("INNERTUBE_API_KEY")), {
-      timeout: 5000,
-    })
+    .waitForFunction(
+      () =>
+        Boolean(globalThis.ytcfg?.get?.("INNERTUBE_API_KEY")) &&
+        Boolean(globalThis.ytcfg?.get?.("INNERTUBE_CONTEXT")),
+      { timeout: 5000 },
+    )
     .catch(() => {});
 
   return {
@@ -89,14 +93,17 @@ async function getTvPlayer(page, videoId) {
   return page.evaluate(
     async ({ id, clientDef }) => {
       const get = globalThis.ytcfg?.get?.bind(globalThis.ytcfg);
-      const context = get ? get("INNERTUBE_CONTEXT") : null;
+      const rawContext = get ? get("INNERTUBE_CONTEXT") : null;
       const apiKey = get ? get("INNERTUBE_API_KEY") : null;
       const visitorData =
-        (get ? get("VISITOR_DATA") : null) || context?.client?.visitorData || null;
+        (get ? get("VISITOR_DATA") : null) || rawContext?.client?.visitorData || null;
 
       if (!apiKey) return { error: "INNERTUBE_API_KEY not found" };
+      if (!rawContext?.client) return { error: "TV INNERTUBE_CONTEXT not found" };
 
+      const context = JSON.parse(JSON.stringify(rawContext));
       const client = {
+        ...context.client,
         clientName: clientDef.clientName,
         clientVersion: clientDef.clientVersion,
         hl: "en",
@@ -104,6 +111,11 @@ async function getTvPlayer(page, videoId) {
         userAgent: clientDef.userAgent,
         ...(visitorData ? { visitorData } : {}),
       };
+
+      if (client.configInfo?.appInstallData) {
+        delete client.configInfo.appInstallData;
+      }
+      context.client = client;
 
       const response = await fetch(
         `/youtubei/v1/player?key=${encodeURIComponent(apiKey)}&prettyPrint=false`,
@@ -117,7 +129,7 @@ async function getTvPlayer(page, videoId) {
             ...(visitorData ? { "X-Goog-Visitor-Id": visitorData } : {}),
           },
           body: JSON.stringify({
-            context: { client },
+            context,
             videoId: id,
             playbackContext: {
               contentPlaybackContext: {
@@ -152,6 +164,8 @@ async function getTvPlayer(page, videoId) {
         playability_status: player?.playabilityStatus?.status || null,
         playability_reason: player?.playabilityStatus?.reason || null,
         visitor_data_present: Boolean(visitorData),
+        context_client_name: context?.client?.clientName || null,
+        context_client_version: context?.client?.clientVersion || null,
         adaptive_count: adaptive.length,
         direct_adaptive_count: direct.length,
         ciphered_adaptive_count: ciphered.length,
@@ -287,11 +301,12 @@ async function runProbe(env, videoId) {
   const browser = await puppeteer.launch(env.BROWSER);
   let resolver;
   try {
-    resolver = await openYoutubePage(browser, videoId);
+    resolver = await openTvPage(browser);
     const player = await getTvPlayer(resolver.page, videoId);
     const result = {
       result: "tvhtml5-static-probe-complete",
       browser_session_count: 1,
+      page_source: "youtube_tv",
       page_http_status: resolver.page_http_status,
       page_title: resolver.page_title,
       client: {
@@ -304,6 +319,8 @@ async function runProbe(env, videoId) {
         playability_status: player.playability_status ?? null,
         playability_reason: player.playability_reason ?? player.error ?? null,
         visitor_data_present: player.visitor_data_present ?? false,
+        context_client_name: player.context_client_name ?? null,
+        context_client_version: player.context_client_version ?? null,
         adaptive_count: player.adaptive_count ?? 0,
         direct_adaptive_count: player.direct_adaptive_count ?? 0,
         ciphered_adaptive_count: player.ciphered_adaptive_count ?? 0,
