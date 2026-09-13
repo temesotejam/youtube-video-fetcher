@@ -24,7 +24,7 @@ jobs:
 
       - name: Check Worker syntax
         working-directory: cloudflare-free-probe
-        run: node --check src/browser-mp4-cdp-size-probe.js
+        run: node --check src/browser-mp4-cdp-offset-probe.js
 
       - name: Deploy Worker
         id: deploy
@@ -35,14 +35,14 @@ jobs:
           workingDirectory: cloudflare-free-probe
           command: deploy --config wrangler-mp4-probe.jsonc
 
-      - name: Run single-browser CDP size probe
+      - name: Run offset probe
         env:
           BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
         run: |
           set -euo pipefail
           sleep 5
           mkdir -p output
-          URL="${BASE_URL%/}/cdp/probe/sizes?v=2NJdNKJ9LPM"
+          URL="${BASE_URL%/}/cdp/probe/offsets?v=2NJdNKJ9LPM"
           CODE=$(curl -sS --max-time 150 -o output/result.json -w "%{http_code}" "$URL")
           echo "http_code=$CODE"
           cat output/result.json
@@ -53,7 +53,7 @@ jobs:
           data = json.loads(Path('output/result.json').read_text())
           print('browser_session_count=', data.get('browser_session_count'))
           for item in data.get('results', []):
-              print('size=', item.get('requested_bytes'), 'success=', item.get('success'), 'status=', item.get('status'), 'received=', item.get('received_bytes'))
+              print('start=', item.get('start'), 'success=', item.get('success'), 'status=', item.get('status'), 'received=', item.get('received_bytes'))
           if data.get('browser_session_count') != 1:
               raise SystemExit('expected one Browser Run session')
           PY
