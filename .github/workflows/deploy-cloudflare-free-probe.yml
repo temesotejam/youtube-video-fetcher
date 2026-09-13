@@ -2,6 +2,12 @@ name: Deploy free Cloudflare Browser Run probe
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - experimental-cloudflare-free-browser
+    paths:
+      - "cloudflare-free-probe/**"
+      - ".github/workflows/deploy-cloudflare-free-probe.yml"
 
 permissions:
   contents: read
