@@ -2,12 +2,6 @@ name: Deploy free Cloudflare MP4 probe
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - experimental-cloudflare-free-browser
-    paths:
-      - "cloudflare-free-probe/**"
-      - ".github/workflows/deploy-cloudflare-free-probe.yml"
 
 permissions:
   contents: read
