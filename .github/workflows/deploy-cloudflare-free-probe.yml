@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   deploy:
-    name: Deploy free MP4 probe
+    name: Deploy free Browser MP4 probe
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -22,11 +22,15 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Install Browser Run dependency
+        working-directory: cloudflare-free-probe
+        run: npm install --no-audit --no-fund
+
       - name: Check Worker syntax
         working-directory: cloudflare-free-probe
-        run: node --check src/relay-probe.js
+        run: node --check src/browser-mp4-probe.js
 
-      - name: Deploy dedicated MP4 Worker
+      - name: Deploy Browser MP4 Worker
         id: deploy
         uses: cloudflare/wrangler-action@v4
         with:
@@ -38,12 +42,12 @@ jobs:
       - name: Show deployment URL
         run: echo "${{ steps.deploy.outputs.deployment-url }}"
 
-      - name: Probe nonzero ranges in one Worker invocation
+      - name: Probe direct MP4 ranges inside one Browser Run session
         env:
           PROBE_BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
         run: |
           echo "Waiting for the new Worker to become reachable..."
           sleep 5
-          echo "Resolving MP4 URLs once, then probing 0/4/8 MiB within one Worker request."
-          curl -sS --fail-with-body --max-time 75 "${PROBE_BASE_URL}/probe/ranges?v=2NJdNKJ9LPM"
+          echo "Opening YouTube, requesting ANDROID_VR player data, then testing 0/4/8 MiB in the same Browser Run session."
+          curl -sS --fail-with-body --max-time 90 "${PROBE_BASE_URL}/probe/ranges?v=2NJdNKJ9LPM"
           echo
