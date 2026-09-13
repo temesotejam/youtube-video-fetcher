@@ -1,0 +1,55 @@
+name: Test static VISIONOS streaming response
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experimental-cloudflare-free-browser
+    paths:
+      - ".github/workflows/test-visionos-stream-static.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Browser Run dependency
+        working-directory: cloudflare-free-probe
+        run: npm install --no-audit --no-fund
+
+      - name: Check streaming Worker syntax
+        working-directory: cloudflare-free-probe
+        run: node --check src/browser-mp4-visionos-stream-probe.js
+
+      - name: Deploy static streaming Worker
+        id: deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare-free-probe
+          command: deploy --config wrangler-visionos-stream-probe.jsonc
+
+      - name: Stream fixed 16 MiB range to runner
+        env:
+          BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          set -euo pipefail
+          sleep 5
+          mkdir -p output
+          CODE=$(curl -sS --max-time 120 -D output/headers.txt -o output/chunk.bin -w "%{http_code}" "${BASE_URL%/}/stream/video")
+          echo "http_code=$CODE"
+          wc -c output/chunk.bin
+          grep -i -E '^(content-type|content-length|x-upstream-status|x-upstream-content-range|x-source-itag|x-source-total-bytes|x-capture-method):' output/headers.txt || true
+          sha256sum output/chunk.bin
+          test "$CODE" = "200"
+          test "$(stat -c%s output/chunk.bin)" -eq 16777216
+          grep -qi '^x-upstream-status: 206' output/headers.txt
+          grep -qi '^x-source-itag: 298' output/headers.txt
+          grep -qi '^x-capture-method: visionos-cdp-readable-stream' output/headers.txt
+          grep -qi '^x-upstream-content-range: bytes 20971520-37748735/80955133' output/headers.txt
