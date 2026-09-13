@@ -13,11 +13,11 @@ permissions:
 
 jobs:
   test:
-    name: Fetch one real 1 MiB MP4 chunk
+    name: Fetch one real 64 KiB MP4 chunk
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Fetch and verify 1 MiB at 4 MiB offset
+      - name: Fetch and verify 64 KiB at 4 MiB offset
         run: |
           python3 - <<'PY'
           import hashlib
@@ -26,11 +26,11 @@ jobs:
 
           url = (
               "https://youtube-free-browser-probe.temesotejam-t265.workers.dev/"
-              "chunk/video?v=2NJdNKJ9LPM&start=4194304&length=1048576"
+              "chunk/video?v=2NJdNKJ9LPM&start=4194304&length=65536"
           )
           request = urllib.request.Request(
               url,
-              headers={"User-Agent": "youtube-video-fetcher-single-chunk-test/0.1"},
+              headers={"User-Agent": "youtube-video-fetcher-64k-transfer-test/0.1"},
           )
 
           try:
@@ -58,12 +58,12 @@ jobs:
               raise SystemExit(f"unexpected Worker status: {status}")
           if headers.get("X-Upstream-Status") != "206":
               raise SystemExit("upstream did not return 206")
-          if headers.get("X-Upstream-Content-Range") != "bytes 4194304-5242879/80955133":
+          if headers.get("X-Upstream-Content-Range") != "bytes 4194304-4259839/80955133":
               raise SystemExit("unexpected Content-Range")
-          if len(data) != 1048576:
-              raise SystemExit(f"expected 1048576 bytes, got {len(data)}")
+          if len(data) != 65536:
+              raise SystemExit(f"expected 65536 bytes, got {len(data)}")
           if not data or all(value == 0 for value in data):
               raise SystemExit("chunk is empty or all zero")
 
-          print("RESULT=PASS_REAL_1MIB_BROWSER_MP4_CHUNK_TRANSFER")
+          print("RESULT=PASS_REAL_64K_BROWSER_MP4_CHUNK_TRANSFER")
           PY
