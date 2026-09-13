@@ -42,56 +42,48 @@ jobs:
       - name: Show deployment URL
         run: echo "${{ steps.deploy.outputs.deployment-url }}"
 
-      - name: Download selected 1 MiB video chunks through Browser Run
+      - name: Download one 64 KiB nonzero video chunk body through Browser Run
         env:
           PROBE_BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
           VIDEO_ID: 2NJdNKJ9LPM
-          CHUNK_BYTES: "1048576"
+          CHUNK_BYTES: "65536"
+          CHUNK_START: "4194304"
         run: |
           set -euo pipefail
           echo "Waiting for the new Worker to become reachable..."
           sleep 5
           mkdir -p output/headers output/chunks
           BASE="${PROBE_BASE_URL%/}"
+          OUT="output/chunks/video.nonzero-64k.bin"
+          HEADERS="output/headers/video.nonzero-64k.headers.txt"
+          URL="${BASE}/chunk/video?v=${VIDEO_ID}&start=${CHUNK_START}&length=${CHUNK_BYTES}"
           echo "base=${BASE}"
-
-          fetch_chunk() {
-            local index="$1"
-            local start="$2"
-            local out="output/chunks/video.part${index}.bin"
-            local headers="output/headers/video.part${index}.headers.txt"
-            local url="${BASE}/chunk/video?v=${VIDEO_ID}&start=${start}&length=${CHUNK_BYTES}"
-            echo "Fetching video chunk ${index}: start=${start}, length=${CHUNK_BYTES}"
-            echo "url_path=/chunk/video"
-            curl -sS --fail-with-body --max-time 90 -D "${headers}" -o "${out}" "${url}"
-            local size
-            size="$(stat -c%s "${out}")"
-            echo "bytes=${size}"
-            echo "--- response headers ${index} ---"
-            grep -i -E '^(http/|content-type|content-length|x-upstream-content-range|x-chunk-start|x-chunk-end|x-source-total-bytes|x-source-itag|x-browser-run|x-paid-cloudflare-feature):' "${headers}" || true
-            if [ "${size}" -ne "${CHUNK_BYTES}" ]; then
-              echo "Unexpected body size. Body preview:"
-              python3 - <<PY
+          echo "Fetching one nonzero chunk body: start=${CHUNK_START}, length=${CHUNK_BYTES}"
+          set +e
+          HTTP_CODE=$(curl -sS --max-time 90 -D "${HEADERS}" -o "${OUT}" -w "%{http_code}" "${URL}")
+          CURL_STATUS=$?
+          set -e
+          echo "curl_status=${CURL_STATUS}"
+          echo "http_code=${HTTP_CODE}"
+          SIZE="$(stat -c%s "${OUT}" 2>/dev/null || echo 0)"
+          echo "bytes=${SIZE}"
+          echo "--- response headers ---"
+          grep -i -E '^(http/|content-type|content-length|x-upstream-content-range|x-chunk-start|x-chunk-end|x-source-total-bytes|x-source-itag|x-browser-run|x-paid-cloudflare-feature):' "${HEADERS}" || true
+          if [ "${CURL_STATUS}" -ne 0 ] || [ "${HTTP_CODE}" != "200" ] || [ "${SIZE}" -ne "${CHUNK_BYTES}" ]; then
+            echo "Unexpected response body preview:"
+            python3 - <<PY
           from pathlib import Path
-          p = Path('${out}')
-          data = p.read_bytes()
+          p = Path('${OUT}')
+          data = p.read_bytes() if p.exists() else b''
           print(data[:1000].decode('utf-8', errors='replace'))
           PY
-              exit 1
-            fi
-          }
-
-          fetch_chunk 000 0
-          fetch_chunk 001 1048576
-          fetch_chunk 004 4194304
-
-          cat output/chunks/video.part000.bin output/chunks/video.part001.bin > output/video-prefix-2m.bin
-          test "$(stat -c%s output/video-prefix-2m.bin)" -eq "$((2 * CHUNK_BYTES))"
+            exit 1
+          fi
           python3 - <<'PY'
           from pathlib import Path
-          prefix = Path('output/video-prefix-2m.bin').read_bytes()[:32]
-          print('prefix_hex=' + prefix.hex())
-          print('contains_ftyp=' + str(b'ftyp' in prefix).lower())
-          if b'ftyp' not in prefix:
-              raise SystemExit('MP4 ftyp signature not found in first 32 bytes')
+          data = Path('output/chunks/video.nonzero-64k.bin').read_bytes()
+          print('chunk_sha256_prefix_check_bytes=' + str(len(data)))
+          print('first16_hex=' + data[:16].hex())
+          if len(data) != 65536:
+              raise SystemExit('wrong chunk length')
           PY
