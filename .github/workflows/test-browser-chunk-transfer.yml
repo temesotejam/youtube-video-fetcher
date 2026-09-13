@@ -13,68 +13,57 @@ permissions:
 
 jobs:
   test:
-    name: Find stable Browser Run MP4 chunk size
+    name: Fetch one real 1 MiB MP4 chunk
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
-      - name: Probe several real chunk sizes at 4 MiB offset
+      - name: Fetch and verify 1 MiB at 4 MiB offset
         run: |
           python3 - <<'PY'
           import hashlib
-          import json
-          import time
           import urllib.error
           import urllib.request
 
-          base = (
+          url = (
               "https://youtube-free-browser-probe.temesotejam-t265.workers.dev/"
-              "chunk/video?v=2NJdNKJ9LPM&start=4194304&length="
+              "chunk/video?v=2NJdNKJ9LPM&start=4194304&length=1048576"
           )
-          sizes = [65536, 131072, 262144, 524288, 1048576]
-          results = []
+          request = urllib.request.Request(
+              url,
+              headers={"User-Agent": "youtube-video-fetcher-single-chunk-test/0.1"},
+          )
 
-          for size in sizes:
-              url = base + str(size)
-              req = urllib.request.Request(
-                  url,
-                  headers={"User-Agent": "youtube-video-fetcher-chunk-size-probe/0.1"},
-              )
-              item = {"requested_bytes": size}
-              started = time.time()
-              try:
-                  with urllib.request.urlopen(req, timeout=60) as response:
-                      data = response.read()
-                      item.update({
-                          "worker_status": response.status,
-                          "upstream_status": response.headers.get("X-Upstream-Status"),
-                          "upstream_content_range": response.headers.get("X-Upstream-Content-Range"),
-                          "received_bytes": len(data),
-                          "sha256": hashlib.sha256(data).hexdigest(),
-                          "ok": (
-                              response.status == 200
-                              and response.headers.get("X-Upstream-Status") == "206"
-                              and len(data) == size
-                          ),
-                      })
-              except urllib.error.HTTPError as exc:
-                  body = exc.read().decode("utf-8", errors="replace")
-                  item.update({
-                      "worker_status": exc.code,
-                      "error_body": body[:1000],
-                      "ok": False,
-                  })
-              except Exception as exc:
-                  item.update({"error": str(exc), "ok": False})
+          try:
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  status = response.status
+                  headers = response.headers
+                  data = response.read()
+          except urllib.error.HTTPError as exc:
+              body = exc.read().decode("utf-8", errors="replace")
+              print(f"worker_http_status={exc.code}")
+              print(f"worker_error_body={body[:4096]}")
+              raise SystemExit(1)
 
-              item["elapsed_s"] = round(time.time() - started, 3)
-              results.append(item)
-              print(json.dumps(item, ensure_ascii=False), flush=True)
-              time.sleep(1)
+          print(f"worker_http_status={status}")
+          print(f"upstream_status={headers.get('X-Upstream-Status')}")
+          print(f"upstream_content_range={headers.get('X-Upstream-Content-Range')}")
+          print(f"capture_method={headers.get('X-Capture-Method')}")
+          print(f"content_type={headers.get('Content-Type')}")
+          print(f"received_bytes={len(data)}")
+          print(f"sha256={hashlib.sha256(data).hexdigest()}")
+          print(f"first16={data[:16].hex()}")
+          print(f"last16={data[-16:].hex()}")
 
-          passing = [r["requested_bytes"] for r in results if r.get("ok")]
-          print(f"passing_sizes={passing}")
-          print(f"largest_passing_size={max(passing) if passing else 0}")
-          if not passing:
-              raise SystemExit("no chunk size succeeded")
-          print("RESULT=CHUNK_SIZE_PROBE_COMPLETE")
+          if status != 200:
+              raise SystemExit(f"unexpected Worker status: {status}")
+          if headers.get("X-Upstream-Status") != "206":
+              raise SystemExit("upstream did not return 206")
+          if headers.get("X-Upstream-Content-Range") != "bytes 4194304-5242879/80955133":
+              raise SystemExit("unexpected Content-Range")
+          if len(data) != 1048576:
+              raise SystemExit(f"expected 1048576 bytes, got {len(data)}")
+          if not data or all(value == 0 for value in data):
+              raise SystemExit("chunk is empty or all zero")
+
+          print("RESULT=PASS_REAL_1MIB_BROWSER_MP4_CHUNK_TRANSFER")
           PY
