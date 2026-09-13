@@ -1,7 +1,10 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "youtube-free-browser-probe",
-  "main": "src/relay-probe.js",
+  "main": "src/browser-mp4-probe.js",
   "compatibility_date": "2026-09-13",
-  "workers_dev": true
+  "workers_dev": true,
+  "browser": {
+    "binding": "BROWSER"
+  }
 }
