@@ -16,11 +16,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Probe 6 MiB position as first media request
+      - name: Probe 5 MiB position as first media request
         run: |
           set -euo pipefail
           mkdir -p output
-          URL="https://youtube-free-browser-probe.temesotejam-t265.workers.dev/cdp/chunk/video?v=2NJdNKJ9LPM&start=6291456&length=262144"
+          URL="https://youtube-free-browser-probe.temesotejam-t265.workers.dev/cdp/chunk/video?v=2NJdNKJ9LPM&start=5242880&length=262144"
           CODE=$(curl -sS --max-time 90 -D output/headers.txt -o output/chunk.bin -w "%{http_code}" "$URL")
           echo "http_code=$CODE"
           wc -c output/chunk.bin
