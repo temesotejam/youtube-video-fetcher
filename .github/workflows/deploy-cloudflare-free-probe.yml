@@ -16,16 +16,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Probe 4.125 MiB position as first media request
+      - name: Probe 4.125 MiB with 64 KiB body
         run: |
           set -euo pipefail
           mkdir -p output
-          URL="https://youtube-free-browser-probe.temesotejam-t265.workers.dev/cdp/chunk/video?v=2NJdNKJ9LPM&start=4325376&length=262144"
+          URL="https://youtube-free-browser-probe.temesotejam-t265.workers.dev/cdp/chunk/video?v=2NJdNKJ9LPM&start=4325376&length=65536"
           CODE=$(curl -sS --max-time 90 -D output/headers.txt -o output/chunk.bin -w "%{http_code}" "$URL")
           echo "http_code=$CODE"
           wc -c output/chunk.bin
           grep -i -E '^(content-type|content-length|x-upstream-content-range|x-source-itag|x-source-total-bytes|x-capture-method|x-cdp-read-count|x-cdp-eof):' output/headers.txt || true
-          if [ "$CODE" != "200" ] || [ "$(stat -c%s output/chunk.bin)" -ne 262144 ]; then
+          if [ "$CODE" != "200" ] || [ "$(stat -c%s output/chunk.bin)" -ne 65536 ]; then
             python3 - <<'PY'
           from pathlib import Path
           print(Path('output/chunk.bin').read_bytes()[:1200].decode('utf-8', errors='replace'))
