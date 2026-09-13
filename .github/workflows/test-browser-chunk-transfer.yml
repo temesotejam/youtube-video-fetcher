@@ -30,7 +30,7 @@ jobs:
           )
           request = urllib.request.Request(
               url,
-              headers={"User-Agent": "youtube-video-fetcher-1mib-batch-test/0.1"},
+              headers={"User-Agent": "youtube-video-fetcher-1mib-batch-test/0.2"},
           )
 
           try:
@@ -49,8 +49,10 @@ jobs:
           print(f"capture_method={headers.get('X-Capture-Method')}")
           print(f"piece_count={headers.get('X-Piece-Count')}")
           print(f"piece_bytes={headers.get('X-Piece-Bytes')}")
-          print(f"first_range={headers.get('X-First-Upstream-Content-Range')}")
-          print(f"last_range={headers.get('X-Last-Upstream-Content-Range')}")
+          print(f"first_piece_status={headers.get('X-First-Piece-Status')}")
+          print(f"first_piece_bytes={headers.get('X-First-Piece-Bytes')}")
+          print(f"last_piece_status={headers.get('X-Last-Piece-Status')}")
+          print(f"last_piece_bytes={headers.get('X-Last-Piece-Bytes')}")
           print(f"source_total={headers.get('X-Source-Total-Bytes')}")
           print(f"received_bytes={len(data)}")
           print(f"sha256={hashlib.sha256(data).hexdigest()}")
@@ -60,11 +62,13 @@ jobs:
           checks = [
               status == 200,
               headers.get("X-Upstream-Status") == "206",
-              headers.get("X-Capture-Method") == "same-origin-64k-batch",
+              headers.get("X-Capture-Method") == "same-origin-64k-batch-relaxed-header",
               headers.get("X-Piece-Count") == "16",
               headers.get("X-Piece-Bytes") == "65536",
-              headers.get("X-First-Upstream-Content-Range") == "bytes 4194304-4259839/80955133",
-              headers.get("X-Last-Upstream-Content-Range") == "bytes 5177344-5242879/80955133",
+              headers.get("X-First-Piece-Status") == "206",
+              headers.get("X-First-Piece-Bytes") == "65536",
+              headers.get("X-Last-Piece-Status") == "206",
+              headers.get("X-Last-Piece-Bytes") == "65536",
               headers.get("X-Source-Total-Bytes") == "80955133",
               len(data) == 1048576,
               bool(data),
