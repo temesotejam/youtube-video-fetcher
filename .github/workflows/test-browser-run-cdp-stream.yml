@@ -2,12 +2,6 @@ name: Test Browser Run CDP stream
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - experimental-browser-run-cdp-stream
-    paths:
-      - ".github/workflows/test-browser-run-cdp-stream.yml"
-      - "scripts/browser_run_cdp_stream_probe.mjs"
 
 permissions:
   contents: read
