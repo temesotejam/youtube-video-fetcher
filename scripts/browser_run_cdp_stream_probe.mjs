@@ -1,12 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import util from "node:util";
 import puppeteer from "puppeteer-core";
 
 const VIDEO_ID = process.env.YOUTUBE_VIDEO_ID || "2NJdNKJ9LPM";
 const ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || "";
 const API_TOKEN =
   process.env.CLOUDFLARE_BROWSER_TOKEN || process.env.CLOUDFLARE_API_TOKEN || "";
+const TOKEN_SOURCE = process.env.CLOUDFLARE_BROWSER_TOKEN
+  ? "CLOUDFLARE_BROWSER_TOKEN"
+  : "CLOUDFLARE_API_TOKEN";
 const START = Number(process.env.PROBE_START || 4 * 1024 * 1024);
 const LENGTH = Number(process.env.PROBE_LENGTH || 64 * 1024);
 const READ_SIZE = Number(process.env.CDP_READ_SIZE || 16 * 1024);
@@ -21,6 +25,23 @@ const ANDROID_VR = {
   userAgent:
     "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
 };
+
+function logStage(name, details = {}) {
+  console.log(
+    JSON.stringify({ stage: name, time: new Date().toISOString(), ...details }),
+  );
+}
+
+function formatError(error) {
+  if (error instanceof Error) return error.stack || error.message;
+  return util.inspect(error, {
+    depth: 8,
+    colors: false,
+    breakLength: 160,
+    maxArrayLength: 40,
+    maxStringLength: 2000,
+  });
+}
 
 function requireEnv(name, value) {
   if (!value) {
@@ -65,6 +86,12 @@ async function openBrowser() {
     `wss://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/browser-rendering/devtools/browser`,
   );
   endpoint.searchParams.set("keep_alive", String(KEEP_ALIVE_MS));
+  logStage("connect_browser", {
+    endpoint_host: endpoint.host,
+    endpoint_path: endpoint.pathname,
+    keep_alive_ms: KEEP_ALIVE_MS,
+    token_source: TOKEN_SOURCE,
+  });
 
   return puppeteer.connect({
     browserWSEndpoint: endpoint.toString(),
@@ -88,6 +115,7 @@ async function resolveAndroidVrVideo(browser) {
     });
 
     const watchUrl = `https://www.youtube.com/watch?v=${VIDEO_ID}`;
+    logStage("open_youtube_watch", { video_id: VIDEO_ID });
     const nav = await page.goto(watchUrl, {
       waitUntil: "domcontentloaded",
       timeout: 30_000,
@@ -98,6 +126,7 @@ async function resolveAndroidVrVideo(browser) {
       { timeout: 10_000 },
     ).catch(() => {});
 
+    logStage("request_android_vr_player");
     const result = await page.evaluate(
       async ({ videoId, clientDef }) => {
         const get = globalThis.ytcfg?.get?.bind(globalThis.ytcfg);
@@ -189,6 +218,13 @@ async function resolveAndroidVrVideo(browser) {
       throw new Error(`PROBE_START ${START} is beyond contentLength ${contentLength}`);
     }
 
+    logStage("resolved_video_stream", {
+      itag: result.video.itag ?? null,
+      height: result.video.height ?? null,
+      content_length: result.video.contentLength || null,
+      host: streamHost,
+    });
+
     return {
       page_http_status: nav?.status() ?? null,
       page_title: await page.title(),
@@ -234,6 +270,7 @@ async function streamRangeWithCdp(browser, videoUrl, start, length) {
   );
 
   try {
+    logStage("enable_cdp_fetch", { requested_range: requestedRange });
     await mediaPage.setUserAgent(ANDROID_VR.userAgent);
     await cdp.send("Network.enable");
     await cdp.send("Network.setExtraHTTPHeaders", {
@@ -276,6 +313,13 @@ async function streamRangeWithCdp(browser, videoUrl, start, length) {
     const contentLength = headers.get("content-length") || null;
     const contentType = headers.get("content-type") || null;
 
+    logStage("googlevideo_response_paused", {
+      status,
+      content_type: contentType,
+      content_length: contentLength,
+      content_range: contentRange,
+    });
+
     if (status !== 206 || !String(contentRange || "").startsWith(`bytes ${start}-`)) {
       throw new Error(
         `Unexpected response headers: status=${status} content-range=${contentRange}`,
@@ -285,6 +329,7 @@ async function streamRangeWithCdp(browser, videoUrl, start, length) {
     const { stream } = await cdp.send("Fetch.takeResponseBodyAsStream", {
       requestId: paused.requestId,
     });
+    logStage("cdp_stream_opened");
 
     const chunks = [];
     let total = 0;
@@ -303,6 +348,7 @@ async function streamRangeWithCdp(browser, videoUrl, start, length) {
       }
       eof = Boolean(read.eof);
       readCount += 1;
+      logStage("cdp_stream_read", { read_count: readCount, chunk_bytes: chunk.length, total_bytes: total, eof });
       if (total > length) {
         throw new Error(`Read more bytes than requested: ${total} > ${length}`);
       }
@@ -341,6 +387,14 @@ async function streamRangeWithCdp(browser, videoUrl, start, length) {
 }
 
 async function main() {
+  logStage("start", {
+    video_id: VIDEO_ID,
+    probe_start: START,
+    probe_length: LENGTH,
+    cdp_read_size: READ_SIZE,
+    keep_alive_ms: KEEP_ALIVE_MS,
+    token_source: TOKEN_SOURCE,
+  });
   assertProbeParams();
   mkdirp(OUTPUT_DIR);
 
@@ -348,6 +402,7 @@ async function main() {
   let browser;
   try {
     browser = await openBrowser();
+    logStage("browser_connected");
     const resolved = await resolveAndroidVrVideo(browser);
     const { body, meta } = await streamRangeWithCdp(browser, resolved.video.url, START, LENGTH);
 
@@ -388,6 +443,6 @@ async function main() {
 
 main().catch((error) => {
   console.error("RESULT=FAIL_CDP_STREAM_RANGE");
-  console.error(error instanceof Error ? error.stack || error.message : String(error));
+  console.error(formatError(error));
   process.exit(1);
 });
