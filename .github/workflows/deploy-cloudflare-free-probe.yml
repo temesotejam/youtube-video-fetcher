@@ -28,7 +28,7 @@ jobs:
 
       - name: Check Worker syntax
         working-directory: cloudflare-free-probe
-        run: node --check src/browser-mp4-probe.js
+        run: node --check src/browser-mp4-same-origin.js
 
       - name: Deploy Browser MP4 Worker
         id: deploy
@@ -41,13 +41,3 @@ jobs:
 
       - name: Show deployment URL
         run: echo "${{ steps.deploy.outputs.deployment-url }}"
-
-      - name: Probe direct MP4 ranges inside one Browser Run session
-        env:
-          PROBE_BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
-        run: |
-          echo "Waiting for the new Worker to become reachable..."
-          sleep 5
-          echo "Opening YouTube, requesting ANDROID_VR player data, then testing 0/4/8 MiB in the same Browser Run session."
-          curl -sS --fail-with-body --max-time 90 "${PROBE_BASE_URL}/probe/ranges?v=2NJdNKJ9LPM"
-          echo
