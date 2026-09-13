@@ -22,6 +22,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Install Browser Session dependency
+        working-directory: cloudflare-free-probe
+        run: npm install --no-audit --no-fund
+
       - name: Check Worker syntax
         working-directory: cloudflare-free-probe
         run: node --check src/index.js
@@ -38,12 +42,12 @@ jobs:
       - name: Show deployment URL
         run: echo "${{ steps.deploy.outputs.deployment-url }}"
 
-      - name: Run one free direct-stream range probe
+      - name: Run one same-session 64 KiB probe
         env:
           PROBE_BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
         run: |
           echo "Waiting briefly for Worker propagation..."
           sleep 3
-          echo "Running one 64 KiB range diagnostic; no full media download."
-          curl -sS --fail-with-body --max-time 45 "${PROBE_BASE_URL}/probe/stream?v=2NJdNKJ9LPM"
+          echo "Running one same-browser-session 64 KiB diagnostic; no full media download."
+          curl -sS --max-time 60 "${PROBE_BASE_URL}/probe/session?v=2NJdNKJ9LPM"
           echo

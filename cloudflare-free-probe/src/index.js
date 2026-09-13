@@ -1,3 +1,5 @@
+import puppeteer from "@cloudflare/puppeteer";
+
 const DEFAULT_VIDEO_ID = "2NJdNKJ9LPM";
 const VIDEO_ID_RE = /^[A-Za-z0-9_-]{11}$/;
 const RANGE_PROBE_BYTES = 64 * 1024;
@@ -12,321 +14,73 @@ function json(data, status = 200) {
   });
 }
 
-function decodeHtml(text) {
-  return text
-    .replaceAll("&amp;", "&")
-    .replaceAll("&quot;", '"')
-    .replaceAll("&#39;", "'")
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">");
-}
-
-function decodeJsEscapes(text) {
-  return text
-    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
-      String.fromCharCode(Number.parseInt(hex, 16)),
-    )
-    .replaceAll("\\/", "/")
-    .replaceAll("&amp;", "&");
-}
-
-function extractTitle(html) {
-  const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  return match ? decodeHtml(match[1].replace(/\s+/g, " ").trim()) : null;
-}
-
-function probeSignals(html) {
-  const lower = html.toLowerCase();
-  return {
-    bot_challenge:
-      lower.includes("sign in to confirm you're not a bot") ||
-      lower.includes("unusual traffic") ||
-      lower.includes("verify it's you"),
-    consent_page:
-      lower.includes("consent.youtube.com") ||
-      lower.includes("before you continue to youtube"),
-    yt_initial_player_response: html.includes("ytInitialPlayerResponse"),
-    playability_status: html.includes("playabilityStatus"),
-    video_details: html.includes("videoDetails"),
-    streaming_data: html.includes("streamingData"),
-    googlevideo_reference: lower.includes("googlevideo.com"),
-    signature_cipher: html.includes("signatureCipher"),
-  };
-}
-
-function extractGooglevideoUrls(html) {
-  const normalized = decodeJsEscapes(html);
-  const matches =
-    normalized.match(
-      /https:\/\/[^"'<>\\\s]+googlevideo\.com\/videoplayback[^"'<>\\\s]*/g,
-    ) || [];
-  return [...new Set(matches)];
-}
-
-function extractBalancedJsonObject(text, fromIndex) {
-  const start = text.indexOf("{", fromIndex);
-  if (start < 0) return null;
-
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let i = start; i < text.length; i += 1) {
-    const ch = text[i];
-
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (ch === "\\") {
-        escaped = true;
-      } else if (ch === '"') {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (ch === '"') {
-      inString = true;
-      continue;
-    }
-    if (ch === "{") depth += 1;
-    if (ch === "}") {
-      depth -= 1;
-      if (depth === 0) return text.slice(start, i + 1);
-    }
-  }
-
-  return null;
-}
-
-function extractPlayerResponse(html) {
-  const markers = [
-    "var ytInitialPlayerResponse =",
-    "ytInitialPlayerResponse =",
-    'window["ytInitialPlayerResponse"] =',
-    "window['ytInitialPlayerResponse'] =",
-  ];
-
-  for (const marker of markers) {
-    const index = html.indexOf(marker);
-    if (index < 0) continue;
-    const raw = extractBalancedJsonObject(html, index + marker.length);
-    if (!raw) continue;
-    try {
-      return JSON.parse(raw);
-    } catch {
-      // Try the next representation if this marker was not a plain JSON object.
-    }
-  }
-
-  return null;
-}
-
-function formatSummary(playerResponse) {
-  const streaming = playerResponse?.streamingData || {};
-  const formats = Array.isArray(streaming.formats) ? streaming.formats : [];
-  const adaptive = Array.isArray(streaming.adaptiveFormats) ? streaming.adaptiveFormats : [];
-  const all = [...formats, ...adaptive];
-
-  return {
-    progressive_count: formats.length,
-    adaptive_count: adaptive.length,
-    direct_url_count: all.filter((f) => typeof f?.url === "string").length,
-    signature_cipher_count: all.filter(
-      (f) => typeof f?.signatureCipher === "string" || typeof f?.cipher === "string",
-    ).length,
-    formats: all.slice(0, 20).map((f) => ({
-      itag: f.itag ?? null,
-      mime_type: f.mimeType ?? null,
-      bitrate: f.bitrate ?? null,
-      width: f.width ?? null,
-      height: f.height ?? null,
-      audio_quality: f.audioQuality ?? null,
-      content_length: f.contentLength ?? null,
-      has_direct_url: typeof f.url === "string",
-      has_signature_cipher:
-        typeof f.signatureCipher === "string" || typeof f.cipher === "string",
-    })),
-  };
-}
-
-function pickDirectProbeFormat(playerResponse) {
-  const streaming = playerResponse?.streamingData || {};
-  const formats = Array.isArray(streaming.formats) ? streaming.formats : [];
-  const adaptive = Array.isArray(streaming.adaptiveFormats) ? streaming.adaptiveFormats : [];
-
-  return (
-    formats.find((f) => f?.itag === 18 && typeof f?.url === "string") ||
-    formats.find(
-      (f) => typeof f?.url === "string" && String(f?.mimeType || "").includes("video/mp4"),
-    ) ||
-    formats.find((f) => typeof f?.url === "string") ||
-    adaptive.find((f) => typeof f?.url === "string") ||
-    null
-  );
-}
-
-async function renderYouTubePage(env, target) {
-  const response = await env.BROWSER.quickAction("content", {
-    url: target,
-    gotoOptions: {
-      waitUntil: "domcontentloaded",
-      timeout: 30000,
-    },
-    rejectResourceTypes: ["image", "font", "stylesheet", "media"],
-  });
-
-  return {
-    response,
-    html: await response.text(),
-  };
-}
-
-async function readAtMost(body, limit) {
-  if (!body) return 0;
-  const reader = body.getReader();
-  let total = 0;
+async function runSameSessionProbe(env, videoId) {
+  const target = `https://www.youtube.com/watch?v=${videoId}`;
+  const started = Date.now();
+  const browser = await puppeteer.launch(env.BROWSER);
 
   try {
-    while (total < limit) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      total += Math.min(value.byteLength, limit - total);
-      if (total >= limit) break;
-    }
-  } finally {
+    const page = await browser.newPage();
+
+    await page.setRequestInterception(true);
+    page.on("request", (req) => {
+      const type = req.resourceType();
+      if (["image", "font", "stylesheet", "media"].includes(type)) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
+
+    const nav = await page.goto(target, {
+      waitUntil: "domcontentloaded",
+      timeout: 30000,
+    });
+
     try {
-      await reader.cancel();
+      await page.waitForFunction(
+        () => Boolean(globalThis.ytInitialPlayerResponse?.streamingData),
+        { timeout: 8000 },
+      );
     } catch {
-      // Ignore cancellation failures; this endpoint is diagnostic only.
-    }
-  }
-
-  return total;
-}
-
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
-
-    if (url.pathname === "/" || url.pathname === "/health") {
-      return json({
-        service: "youtube-free-browser-probe",
-        purpose: "Test YouTube reachability from Cloudflare Browser Run without a local PC",
-        paid_components: [],
-        uses_cloudflare_containers: false,
-        uses_r2: false,
-        uses_workers_ai: false,
-        browser_run_free_limit: "10 minutes/day on Workers Free",
-        probe: "/probe?v=VIDEO_ID",
-        range_probe: "/probe/stream?v=VIDEO_ID",
-        default_video_id: DEFAULT_VIDEO_ID,
-      });
+      // Continue with whatever the page exposed.
     }
 
-    if (url.pathname !== "/probe" && url.pathname !== "/probe/stream") {
-      return json({ error: "Not found" }, 404);
-    }
+    const pageTitle = await page.title();
+    const inBrowser = await page.evaluate(async (limit) => {
+      const player = globalThis.ytInitialPlayerResponse || null;
+      const streaming = player?.streamingData || {};
+      const formats = Array.isArray(streaming.formats) ? streaming.formats : [];
+      const adaptive = Array.isArray(streaming.adaptiveFormats)
+        ? streaming.adaptiveFormats
+        : [];
+      const all = [...formats, ...adaptive];
 
-    const videoId = url.searchParams.get("v") || DEFAULT_VIDEO_ID;
-    if (!VIDEO_ID_RE.test(videoId)) {
-      return json({ error: "Invalid YouTube video ID" }, 400);
-    }
+      const selected =
+        formats.find((f) => f?.itag === 18 && typeof f?.url === "string") ||
+        formats.find(
+          (f) =>
+            typeof f?.url === "string" &&
+            String(f?.mimeType || "").includes("video/mp4"),
+        ) ||
+        formats.find((f) => typeof f?.url === "string") ||
+        adaptive.find((f) => typeof f?.url === "string") ||
+        null;
 
-    const target = `https://www.youtube.com/watch?v=${videoId}`;
-    const started = Date.now();
+      const videoElement = document.querySelector("video");
+      const currentSrc = videoElement?.currentSrc || videoElement?.src || null;
+      const streamUrl = selected?.url || currentSrc || null;
 
-    try {
-      const { response, html } = await renderYouTubePage(env, target);
-      const signals = probeSignals(html);
-      const blocked = signals.bot_challenge || signals.consent_page;
-      const playerResponse = extractPlayerResponse(html);
-      const googlevideoUrls = extractGooglevideoUrls(html);
-
-      if (url.pathname === "/probe") {
-        return json({
-          result: blocked ? "blocked-or-interstitial" : "page-accessed",
-          target,
-          http_status: response.status,
-          elapsed_ms: Date.now() - started,
-          browser_ms_used: response.headers.get("X-Browser-Ms-Used"),
-          rendered_html_bytes: new TextEncoder().encode(html).byteLength,
-          page_title: extractTitle(html),
-          signals,
-          player_response_parsed: Boolean(playerResponse),
-          direct_googlevideo_url_count: googlevideoUrls.length,
-          format_summary: playerResponse ? formatSummary(playerResponse) : null,
-          interpretation: blocked
-            ? "Cloudflare Browser Run reached YouTube but received a bot/consent interstitial."
-            : playerResponse?.streamingData
-              ? "YouTube page rendered and streamingData was parsed."
-              : googlevideoUrls.length > 0
-                ? "YouTube page rendered and direct googlevideo URLs were found in the HTML."
-                : signals.yt_initial_player_response || signals.streaming_data
-                  ? "Player signals are visible, but no direct stream URL was extracted yet."
-                  : "YouTube page rendered without an obvious bot page, but player data was not found.",
-          media_downloaded: false,
-          local_pc_required: false,
-          paid_cloudflare_feature_used_by_this_probe: false,
-        });
-      }
-
-      if (blocked) {
-        return json(
-          {
-            result: "blocked-or-interstitial",
-            target,
-            signals,
-            media_downloaded: false,
-            local_pc_required: false,
-            paid_cloudflare_feature_used_by_this_probe: false,
-          },
-          502,
-        );
-      }
-
-      const selected = pickDirectProbeFormat(playerResponse);
-      const selectedUrl = selected?.url || googlevideoUrls[0] || null;
-      const extractionSource = selected?.url
-        ? "player-response"
-        : googlevideoUrls[0]
-          ? "html-googlevideo-reference"
-          : null;
-
-      if (!selectedUrl) {
-        return json(
-          {
-            result: playerResponse ? "no-direct-stream-url" : "player-response-not-parsed",
-            target,
-            signals,
-            direct_googlevideo_url_count: googlevideoUrls.length,
-            format_summary: playerResponse ? formatSummary(playerResponse) : null,
-            media_downloaded: false,
-            local_pc_required: false,
-            paid_cloudflare_feature_used_by_this_probe: false,
-          },
-          502,
-        );
-      }
-
-      const streamStarted = Date.now();
-      const upstream = await fetch(selectedUrl, {
-        headers: {
-          Range: `bytes=0-${RANGE_PROBE_BYTES - 1}`,
-          Accept: "*/*",
-        },
-        redirect: "follow",
-      });
-      const receivedBytes = await readAtMost(upstream.body, RANGE_PROBE_BYTES);
-
-      return json({
-        result: upstream.ok ? "range-fetch-reached-googlevideo" : "range-fetch-failed",
-        target,
-        page_title: playerResponse?.videoDetails?.title || extractTitle(html),
-        browser_ms_used: response.headers.get("X-Browser-Ms-Used"),
-        extraction_source: extractionSource,
-        direct_googlevideo_url_count: googlevideoUrls.length,
+      const base = {
+        player_response_present: Boolean(player),
+        streaming_data_present: Boolean(player?.streamingData),
+        progressive_count: formats.length,
+        adaptive_count: adaptive.length,
+        direct_url_count: all.filter((f) => typeof f?.url === "string").length,
+        signature_cipher_count: all.filter(
+          (f) =>
+            typeof f?.signatureCipher === "string" || typeof f?.cipher === "string",
+        ).length,
         selected_format: selected
           ? {
               itag: selected.itag ?? null,
@@ -337,27 +91,128 @@ export default {
               content_length: selected.contentLength ?? null,
             }
           : null,
-        upstream_status: upstream.status,
-        upstream_content_type: upstream.headers.get("Content-Type"),
-        upstream_content_length: upstream.headers.get("Content-Length"),
-        upstream_content_range: upstream.headers.get("Content-Range"),
-        requested_range_bytes: RANGE_PROBE_BYTES,
-        received_bytes_before_cancel: receivedBytes,
-        range_fetch_elapsed_ms: Date.now() - streamStarted,
-        total_elapsed_ms: Date.now() - started,
-        stream_url_returned_to_client: false,
-        full_media_downloaded: false,
-        local_pc_required: false,
-        paid_cloudflare_feature_used_by_this_probe: false,
+        used_video_current_src_fallback: !selected?.url && Boolean(currentSrc),
+      };
+
+      if (!streamUrl) {
+        return {
+          ...base,
+          result: "no-direct-stream-url-in-session",
+          fetch_attempted: false,
+        };
+      }
+
+      try {
+        const response = await fetch(streamUrl, {
+          method: "GET",
+          headers: {
+            Range: `bytes=0-${limit - 1}`,
+          },
+          credentials: "include",
+          cache: "no-store",
+        });
+
+        const reader = response.body?.getReader();
+        let received = 0;
+        if (reader) {
+          try {
+            while (received < limit) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (!value) continue;
+              received += Math.min(value.byteLength, limit - received);
+              if (received >= limit) break;
+            }
+          } finally {
+            try {
+              await reader.cancel();
+            } catch {
+              // Diagnostic only.
+            }
+          }
+        }
+
+        return {
+          ...base,
+          result: response.ok
+            ? "same-session-range-fetch-succeeded"
+            : "same-session-range-fetch-http-error",
+          fetch_attempted: true,
+          upstream_status: response.status,
+          upstream_content_type: response.headers.get("content-type"),
+          upstream_content_length: response.headers.get("content-length"),
+          upstream_content_range: response.headers.get("content-range"),
+          requested_range_bytes: limit,
+          received_bytes_before_cancel: received,
+          stream_host: new URL(streamUrl).hostname,
+        };
+      } catch (error) {
+        return {
+          ...base,
+          result: "same-session-fetch-threw",
+          fetch_attempted: true,
+          error: error instanceof Error ? error.message : String(error),
+          stream_host: (() => {
+            try {
+              return new URL(streamUrl).hostname;
+            } catch {
+              return null;
+            }
+          })(),
+        };
+      }
+    }, RANGE_PROBE_BYTES);
+
+    return {
+      target,
+      page_http_status: nav?.status() ?? null,
+      page_title: pageTitle,
+      elapsed_ms: Date.now() - started,
+      ...inBrowser,
+      stream_url_returned_to_client: false,
+      full_media_downloaded: false,
+      local_pc_required: false,
+      paid_cloudflare_feature_used_by_this_probe: false,
+    };
+  } finally {
+    await browser.close();
+  }
+}
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+
+    if (url.pathname === "/" || url.pathname === "/health") {
+      return json({
+        service: "youtube-free-browser-probe",
+        mode: "free-only",
+        browser_run_free_limit: "10 minutes/day on Workers Free",
+        uses_cloudflare_containers: false,
+        uses_r2: false,
+        uses_workers_ai: false,
+        same_session_probe: "/probe/session?v=VIDEO_ID",
+        default_video_id: DEFAULT_VIDEO_ID,
       });
+    }
+
+    if (url.pathname !== "/probe/session") {
+      return json({ error: "Not found" }, 404);
+    }
+
+    const videoId = url.searchParams.get("v") || DEFAULT_VIDEO_ID;
+    if (!VIDEO_ID_RE.test(videoId)) {
+      return json({ error: "Invalid YouTube video ID" }, 400);
+    }
+
+    try {
+      return json(await runSameSessionProbe(env, videoId));
     } catch (error) {
       return json(
         {
-          result: "error",
-          target,
-          elapsed_ms: Date.now() - started,
+          result: "worker-error",
           error: error instanceof Error ? error.message : String(error),
-          media_downloaded: false,
+          full_media_downloaded: false,
           local_pc_required: false,
           paid_cloudflare_feature_used_by_this_probe: false,
         },
