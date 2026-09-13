@@ -1,9 +1,8 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "youtube-free-browser-probe",
-  "main": "src/browser-po-token-probe.js",
+  "main": "src/browser-mp4-probe.js",
   "compatibility_date": "2026-09-13",
-  "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "browser": {
     "binding": "BROWSER"
