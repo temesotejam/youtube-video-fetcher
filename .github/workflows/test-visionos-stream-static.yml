@@ -35,7 +35,7 @@ jobs:
           workingDirectory: cloudflare-free-probe
           command: deploy --config wrangler-visionos-stream-probe.jsonc
 
-      - name: Stream fixed 16 MiB range to runner
+      - name: Stream fixed 16 MiB range with 1 MiB CDP reads
         env:
           BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
         run: |
