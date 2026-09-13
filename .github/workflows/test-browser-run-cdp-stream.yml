@@ -20,12 +20,23 @@ jobs:
       BROWSER_RUN_KEEP_ALIVE_MS: "600000"
       OUTPUT_DIR: output
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_BROWSER_TOKEN: ${{ secrets.CLOUDFLARE_BROWSER_TOKEN }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Require Browser Run CDP credentials
+        run: |
+          if [ -z "${CLOUDFLARE_ACCOUNT_ID}" ]; then
+            echo "CLOUDFLARE_ACCOUNT_ID is not configured."
+            exit 1
+          fi
+          if [ -z "${CLOUDFLARE_BROWSER_TOKEN}" ]; then
+            echo "CLOUDFLARE_BROWSER_TOKEN is not configured. Create a Cloudflare custom API token with Account > Browser Rendering > Edit permission."
+            exit 1
+          fi
+          echo "Browser Run CDP credentials are configured."
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
