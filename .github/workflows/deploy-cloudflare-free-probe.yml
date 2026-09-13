@@ -42,12 +42,12 @@ jobs:
       - name: Show deployment URL
         run: echo "${{ steps.deploy.outputs.deployment-url }}"
 
-      - name: Run one same-session 64 KiB probe
+      - name: Run one worker-origin progressive MP4 probe
         env:
           PROBE_BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
         run: |
           echo "Waiting briefly for Worker propagation..."
           sleep 3
-          echo "Running one same-browser-session 64 KiB diagnostic; no full media download."
-          curl -sS --max-time 60 "${PROBE_BASE_URL}/probe/session?v=2NJdNKJ9LPM"
+          echo "Testing logged-out player clients for a progressive MP4 direct URL; no full download."
+          curl -sS --max-time 75 "${PROBE_BASE_URL}/probe/client?v=2NJdNKJ9LPM"
           echo
