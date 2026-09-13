@@ -2,7 +2,7 @@ import puppeteer from "@cloudflare/puppeteer";
 
 const TEST_VIDEO_ID = "2NJdNKJ9LPM";
 const RANGE_START = 20 * 1024 * 1024;
-const RANGE_LENGTH = 256 * 1024;
+const RANGE_LENGTH = 4 * 1024 * 1024;
 const READ_SIZE = 16 * 1024;
 
 const VISIONOS_CLIENT = {
@@ -261,7 +261,7 @@ async function probeRange(browser, format) {
       readCount += 1;
       eof = Boolean(read.eof);
       if (received > expected) throw new Error(`Received too much data: ${received}`);
-      if (readCount > 128) throw new Error("Too many IO.read calls");
+      if (readCount > 512) throw new Error("Too many IO.read calls");
     }
 
     await cdp.send("IO.close", { handle: stream }).catch(() => {});
