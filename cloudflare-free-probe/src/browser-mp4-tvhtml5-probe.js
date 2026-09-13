@@ -8,9 +8,8 @@ const READ_SIZE = 16 * 1024;
 const TV_CLIENT = {
   id: 7,
   clientName: "TVHTML5",
-  clientVersion: "7.20260707.07.00",
-  userAgent:
-    "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)",
+  clientVersion: "5.20260707",
+  userAgent: "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version",
 };
 
 function json(data, status = 200) {
