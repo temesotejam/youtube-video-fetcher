@@ -3,7 +3,7 @@ import puppeteer from "@cloudflare/puppeteer";
 const TEST_VIDEO_ID = "2NJdNKJ9LPM";
 const RANGE_START = 20 * 1024 * 1024;
 const RANGE_LENGTH = 16 * 1024 * 1024;
-const READ_SIZE = 1024 * 1024;
+const READ_SIZE = 256 * 1024;
 
 const VISIONOS_CLIENT = {
   id: 101,
