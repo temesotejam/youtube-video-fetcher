@@ -2,13 +2,6 @@ name: Test static TVHTML5 Browser Run probe
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - experimental-cloudflare-free-browser
-    paths:
-      - ".github/workflows/test-tvhtml5-static.yml"
-      - "cloudflare-free-probe/src/browser-mp4-tvhtml5-probe.js"
-      - "cloudflare-free-probe/wrangler-tvhtml5-probe.jsonc"
 
 permissions:
   contents: read
