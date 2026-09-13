@@ -13,11 +13,11 @@ permissions:
 
 jobs:
   test:
-    name: Fetch one real 64 KiB MP4 chunk
+    name: Fetch one batched 1 MiB MP4 chunk
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Fetch and verify 64 KiB at 4 MiB offset
+      - name: Fetch 64 KiB x16 as one 1 MiB result
         run: |
           python3 - <<'PY'
           import hashlib
@@ -26,15 +26,15 @@ jobs:
 
           url = (
               "https://youtube-free-browser-probe.temesotejam-t265.workers.dev/"
-              "chunk/video?v=2NJdNKJ9LPM&start=4194304&length=65536"
+              "batch/video?v=2NJdNKJ9LPM&start=4194304&length=1048576"
           )
           request = urllib.request.Request(
               url,
-              headers={"User-Agent": "youtube-video-fetcher-64k-transfer-test/0.1"},
+              headers={"User-Agent": "youtube-video-fetcher-1mib-batch-test/0.1"},
           )
 
           try:
-              with urllib.request.urlopen(request, timeout=60) as response:
+              with urllib.request.urlopen(request, timeout=90) as response:
                   status = response.status
                   headers = response.headers
                   data = response.read()
@@ -46,24 +46,32 @@ jobs:
 
           print(f"worker_http_status={status}")
           print(f"upstream_status={headers.get('X-Upstream-Status')}")
-          print(f"upstream_content_range={headers.get('X-Upstream-Content-Range')}")
           print(f"capture_method={headers.get('X-Capture-Method')}")
-          print(f"content_type={headers.get('Content-Type')}")
+          print(f"piece_count={headers.get('X-Piece-Count')}")
+          print(f"piece_bytes={headers.get('X-Piece-Bytes')}")
+          print(f"first_range={headers.get('X-First-Upstream-Content-Range')}")
+          print(f"last_range={headers.get('X-Last-Upstream-Content-Range')}")
+          print(f"source_total={headers.get('X-Source-Total-Bytes')}")
           print(f"received_bytes={len(data)}")
           print(f"sha256={hashlib.sha256(data).hexdigest()}")
           print(f"first16={data[:16].hex()}")
           print(f"last16={data[-16:].hex()}")
 
-          if status != 200:
-              raise SystemExit(f"unexpected Worker status: {status}")
-          if headers.get("X-Upstream-Status") != "206":
-              raise SystemExit("upstream did not return 206")
-          if headers.get("X-Upstream-Content-Range") != "bytes 4194304-4259839/80955133":
-              raise SystemExit("unexpected Content-Range")
-          if len(data) != 65536:
-              raise SystemExit(f"expected 65536 bytes, got {len(data)}")
-          if not data or all(value == 0 for value in data):
-              raise SystemExit("chunk is empty or all zero")
+          checks = [
+              status == 200,
+              headers.get("X-Upstream-Status") == "206",
+              headers.get("X-Capture-Method") == "same-origin-64k-batch",
+              headers.get("X-Piece-Count") == "16",
+              headers.get("X-Piece-Bytes") == "65536",
+              headers.get("X-First-Upstream-Content-Range") == "bytes 4194304-4259839/80955133",
+              headers.get("X-Last-Upstream-Content-Range") == "bytes 5177344-5242879/80955133",
+              headers.get("X-Source-Total-Bytes") == "80955133",
+              len(data) == 1048576,
+              bool(data),
+              not all(value == 0 for value in data),
+          ]
+          if not all(checks):
+              raise SystemExit("1 MiB batch verification failed")
 
-          print("RESULT=PASS_REAL_64K_BROWSER_MP4_CHUNK_TRANSFER")
+          print("RESULT=PASS_1MIB_FROM_16_X_64K_BROWSER_RANGES")
           PY
