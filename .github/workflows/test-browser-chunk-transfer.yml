@@ -1,0 +1,65 @@
+name: Test Browser Run MP4 chunk transfer
+
+on:
+  push:
+    branches:
+      - experimental-cloudflare-free-browser
+    paths:
+      - ".github/workflows/test-browser-chunk-transfer.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Fetch one 1 MiB MP4 chunk
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch and verify one real chunk
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import urllib.request
+
+          url = (
+              "https://youtube-free-browser-probe.temesotejam-t265.workers.dev/"
+              "chunk/video?v=2NJdNKJ9LPM&start=4194304&length=1048576"
+          )
+          req = urllib.request.Request(
+              url,
+              headers={"User-Agent": "youtube-video-fetcher-chunk-test/0.1"},
+          )
+          with urllib.request.urlopen(req, timeout=60) as response:
+              status = response.status
+              headers = response.headers
+              data = response.read()
+
+          print(f"worker_http_status={status}")
+          print(f"upstream_status={headers.get('X-Upstream-Status')}")
+          print(f"upstream_content_range={headers.get('X-Upstream-Content-Range')}")
+          print(f"content_type={headers.get('Content-Type')}")
+          print(f"content_length_header={headers.get('Content-Length')}")
+          print(f"received_bytes={len(data)}")
+          print(f"sha256={hashlib.sha256(data).hexdigest()}")
+          print(f"first16={data[:16].hex()}")
+          print(f"last16={data[-16:].hex()}")
+
+          expected_size = 1024 * 1024
+          expected_range = "bytes 4194304-5242879/80955133"
+          if status != 200:
+              raise SystemExit(f"unexpected Worker status: {status}")
+          if headers.get("X-Upstream-Status") != "206":
+              raise SystemExit("upstream was not HTTP 206")
+          if headers.get("X-Upstream-Content-Range") != expected_range:
+              raise SystemExit(
+                  f"unexpected upstream Content-Range: {headers.get('X-Upstream-Content-Range')}"
+              )
+          if len(data) != expected_size:
+              raise SystemExit(f"expected {expected_size} bytes, got {len(data)}")
+          if not data or all(b == 0 for b in data):
+              raise SystemExit("chunk is empty or all zero")
+
+          print("RESULT=PASS_REAL_1MIB_BROWSER_MP4_CHUNK_TRANSFER")
+          PY
