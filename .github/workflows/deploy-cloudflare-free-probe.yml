@@ -1,4 +1,4 @@
-name: Deploy free Cloudflare MP4 probe
+name: Probe deployed Cloudflare MP4 worker
 
 on:
   workflow_dispatch:
@@ -12,37 +12,15 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
+  probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Browser Run dependency
-        working-directory: cloudflare-free-probe
-        run: npm install --no-audit --no-fund
-
-      - name: Check Worker syntax
-        working-directory: cloudflare-free-probe
-        run: node --check src/browser-mp4-cdp-stream.js
-
-      - name: Deploy Worker
-        id: deploy
-        uses: cloudflare/wrangler-action@v4
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: cloudflare-free-probe
-          command: deploy --config wrangler-mp4-probe.jsonc
-
-      - name: Test 20 MiB position as first media request
-        env:
-          BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
+      - name: Probe 8 MiB position as first media request
         run: |
           set -euo pipefail
-          sleep 5
           mkdir -p output
-          URL="${BASE_URL%/}/cdp/chunk/video?v=2NJdNKJ9LPM&start=20971520&length=262144"
+          URL="https://youtube-free-browser-probe.temesotejam-t265.workers.dev/cdp/chunk/video?v=2NJdNKJ9LPM&start=8388608&length=262144"
           CODE=$(curl -sS --max-time 90 -D output/headers.txt -o output/chunk.bin -w "%{http_code}" "$URL")
           echo "http_code=$CODE"
           wc -c output/chunk.bin
