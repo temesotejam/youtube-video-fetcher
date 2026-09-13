@@ -1,0 +1,14 @@
+{
+  "name": "youtube-video-fetcher-cloudflare-probe",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "0.3.7"
+  },
+  "devDependencies": {
+    "wrangler": "4.131.1"
+  }
+}
