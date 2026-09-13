@@ -35,19 +35,30 @@ jobs:
           workingDirectory: cloudflare-free-probe
           command: deploy --config wrangler-visionos-stream-probe.jsonc
 
-      - name: Stream fixed 16 MiB range with 1 MiB CDP reads
+      - name: Stream fixed 16 MiB range with 256 KiB CDP reads
         env:
           BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
         run: |
           set -euo pipefail
           sleep 5
           mkdir -p output
+          set +e
           CODE=$(curl -sS --max-time 120 -D output/headers.txt -o output/chunk.bin -w "%{http_code}" "${BASE_URL%/}/stream/video")
+          CURL_RC=$?
+          set -e
+          echo "curl_rc=$CURL_RC"
           echo "http_code=$CODE"
           wc -c output/chunk.bin
           grep -i -E '^(content-type|content-length|x-upstream-status|x-upstream-content-range|x-source-itag|x-source-total-bytes|x-capture-method):' output/headers.txt || true
+          if [ "$CURL_RC" -ne 0 ] || [ "$CODE" != "200" ]; then
+            python3 - <<'PY'
+          from pathlib import Path
+          p = Path('output/chunk.bin')
+          print(p.read_bytes()[:1200].decode('utf-8', errors='replace'))
+          PY
+            exit 1
+          fi
           sha256sum output/chunk.bin
-          test "$CODE" = "200"
           test "$(stat -c%s output/chunk.bin)" -eq 16777216
           grep -qi '^x-upstream-status: 206' output/headers.txt
           grep -qi '^x-source-itag: 298' output/headers.txt
