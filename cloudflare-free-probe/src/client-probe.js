@@ -142,6 +142,46 @@ function selectProgressiveMp4(player) {
   );
 }
 
+function selectAdaptiveMp4Pair(player) {
+  const adaptive = Array.isArray(player?.streamingData?.adaptiveFormats)
+    ? player.streamingData.adaptiveFormats
+    : [];
+  const direct = adaptive.filter((f) => typeof f?.url === "string");
+  const video =
+    direct.find((f) => String(f?.mimeType || "").includes("video/mp4") && String(f?.mimeType || "").includes("avc1") && Number(f?.height || 0) <= 720) ||
+    direct.find((f) => String(f?.mimeType || "").includes("video/mp4") && String(f?.mimeType || "").includes("avc1")) ||
+    direct.find((f) => String(f?.mimeType || "").includes("video/mp4")) ||
+    null;
+  const audio =
+    direct.find((f) => f?.itag === 140 && String(f?.mimeType || "").includes("audio/mp4")) ||
+    direct.find((f) => String(f?.mimeType || "").includes("audio/mp4") && String(f?.mimeType || "").includes("mp4a")) ||
+    direct.find((f) => String(f?.mimeType || "").includes("audio/mp4")) ||
+    null;
+  return { video, audio };
+}
+
+function safeFormatMeta(format) {
+  if (!format) return null;
+  let query = [];
+  let host = null;
+  try {
+    const parsed = new URL(format.url);
+    host = parsed.hostname;
+    query = [...parsed.searchParams.keys()].sort();
+  } catch {}
+  return {
+    itag: format.itag ?? null,
+    mime_type: format.mimeType || null,
+    width: format.width ?? null,
+    height: format.height ?? null,
+    bitrate: format.bitrate ?? null,
+    content_length: format.contentLength || null,
+    host,
+    query_keys: query,
+    has_po_token_param: query.includes("pot") || query.includes("po_token"),
+  };
+}
+
 async function requestPlayer(config, videoId, def) {
   const client = {
     clientName: def.clientName,
@@ -194,6 +234,7 @@ async function readAtMost(body, limit) {
       if (done) break;
       if (!value) continue;
       total += Math.min(value.byteLength, limit - total);
+      if (total >= limit) break;
     }
   } finally {
     try { await reader.cancel(); } catch {}
@@ -220,54 +261,66 @@ async function rangeProbe(def, format) {
 async function run(videoId) {
   const started = Date.now();
   const clients = [];
-  let winner = null;
+  let progressiveWinner = null;
+  let adaptiveWinner = null;
 
   for (const def of CLIENTS) {
     try {
       const config = await harvestConfig(videoId, def);
       if (!config.apiKey) {
-        clients.push({ client: def.key, config: { ...config, apiKey: undefined, visitorData: undefined }, error: "innertube-api-key-not-found" });
+        clients.push({ client: def.key, error: "innertube-api-key-not-found" });
         continue;
       }
       const { response, player } = await requestPlayer(config, videoId, def);
-      const format = selectProgressiveMp4(player);
-      const probe = format ? await rangeProbe(def, format) : null;
+      const progressive = selectProgressiveMp4(player);
+      const progressiveProbe = progressive ? await rangeProbe(def, progressive) : null;
+      const adaptive = selectAdaptiveMp4Pair(player);
+      const adaptiveVideoProbe = adaptive.video ? await rangeProbe(def, adaptive.video) : null;
+      const adaptiveAudioProbe = adaptive.audio ? await rangeProbe(def, adaptive.audio) : null;
+
       const item = {
         client: def.key,
         config: {
           page_http_status: config.page_http_status,
-          page_title: config.page_title,
           visitor_data_present: Boolean(config.visitorData),
           signature_timestamp_present: Boolean(config.sts),
           bot_challenge: config.bot_challenge,
         },
         player_http_status: response.status,
         summary: summarize(player),
-        selected_progressive_mp4: format
-          ? {
-              itag: format.itag || null,
-              mime_type: format.mimeType || null,
-              content_length: format.contentLength || null,
-            }
-          : null,
-        range_probe: probe,
+        progressive: {
+          format: safeFormatMeta(progressive),
+          probe: progressiveProbe,
+        },
+        adaptive: {
+          video_format: safeFormatMeta(adaptive.video),
+          video_probe: adaptiveVideoProbe,
+          audio_format: safeFormatMeta(adaptive.audio),
+          audio_probe: adaptiveAudioProbe,
+        },
       };
       clients.push(item);
-      if (probe?.success) {
-        winner = item;
-        break;
+
+      if (!progressiveWinner && progressiveProbe?.success) progressiveWinner = item;
+      if (!adaptiveWinner && adaptiveVideoProbe?.success && adaptiveAudioProbe?.success) {
+        adaptiveWinner = item;
       }
+      if (progressiveWinner || adaptiveWinner) break;
     } catch (error) {
       clients.push({ client: def.key, error: error instanceof Error ? error.message : String(error) });
     }
   }
 
   return {
-    result: winner ? "progressive-mp4-range-succeeded-from-worker-origin" : "no-downloadable-progressive-mp4-found",
+    result: progressiveWinner
+      ? "progressive-mp4-range-succeeded-from-worker-origin"
+      : adaptiveWinner
+        ? "adaptive-mp4-video-and-audio-ranges-succeeded"
+        : "no-downloadable-mp4-streams-found",
     elapsed_ms: Date.now() - started,
     clients,
-    winning_client: winner?.client || null,
-    stream_url_returned_to_client: false,
+    progressive_winning_client: progressiveWinner?.client || null,
+    adaptive_winning_client: adaptiveWinner?.client || null,
     full_media_downloaded: false,
     local_pc_required: false,
     browser_run_used: false,
