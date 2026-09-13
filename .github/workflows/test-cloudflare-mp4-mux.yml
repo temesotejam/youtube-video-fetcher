@@ -1,0 +1,89 @@
+name: Test free Cloudflare MP4 mux
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experimental-cloudflare-free-browser
+    paths:
+      - ".github/workflows/test-cloudflare-mp4-mux.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  mux:
+    name: Download relay streams and mux MP4
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check FFmpeg
+        run: |
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+
+      - name: Create output directory
+        run: mkdir -p output
+
+      - name: Download video-only MP4 through Cloudflare relay
+        run: |
+          curl --fail --location --retry 4 --retry-delay 2 --retry-all-errors \
+            --connect-timeout 20 --max-time 300 \
+            -o output/video-only.mp4 \
+            "https://youtube-free-browser-probe.temesotejam-t265.workers.dev/relay/video?v=2NJdNKJ9LPM"
+          ls -lh output/video-only.mp4
+          test "$(stat -c%s output/video-only.mp4)" -gt 1000000
+
+      - name: Download audio-only MP4 through Cloudflare relay
+        run: |
+          curl --fail --location --retry 4 --retry-delay 2 --retry-all-errors \
+            --connect-timeout 20 --max-time 300 \
+            -o output/audio-only.m4a \
+            "https://youtube-free-browser-probe.temesotejam-t265.workers.dev/relay/audio?v=2NJdNKJ9LPM"
+          ls -lh output/audio-only.m4a
+          test "$(stat -c%s output/audio-only.m4a)" -gt 1000000
+
+      - name: Inspect downloaded streams
+        run: |
+          ffprobe -v error -show_entries stream=index,codec_type,codec_name,width,height -of json output/video-only.mp4
+          ffprobe -v error -show_entries stream=index,codec_type,codec_name -of json output/audio-only.m4a
+
+      - name: Mux video and audio without transcoding
+        run: |
+          ffmpeg -y \
+            -i output/video-only.mp4 \
+            -i output/audio-only.m4a \
+            -map 0:v:0 -map 1:a:0 \
+            -c copy \
+            -movflags +faststart \
+            output/video.mp4
+          ls -lh output/video.mp4
+
+      - name: Verify final MP4
+        run: |
+          ffprobe -v error \
+            -show_entries format=duration,size,format_name \
+            -show_entries stream=index,codec_type,codec_name,width,height \
+            -of json output/video.mp4 | tee output/ffprobe.json
+          test "$(stat -c%s output/video.mp4)" -gt 1000000
+          test "$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_type -of csv=p=0 output/video.mp4)" = "video"
+          test "$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 output/video.mp4)" = "audio"
+
+      - name: Upload combined MP4 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-cloudflare-mp4-${{ github.run_id }}
+          path: |
+            output/video.mp4
+            output/ffprobe.json
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Clean temporary media
+        if: always()
+        run: rm -rf output
