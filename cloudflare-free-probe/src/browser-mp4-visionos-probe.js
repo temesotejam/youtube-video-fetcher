@@ -1,0 +1,372 @@
+import puppeteer from "@cloudflare/puppeteer";
+
+const TEST_VIDEO_ID = "2NJdNKJ9LPM";
+const RANGE_START = 20 * 1024 * 1024;
+const RANGE_LENGTH = 256 * 1024;
+const READ_SIZE = 16 * 1024;
+
+const VISIONOS_CLIENT = {
+  id: 101,
+  clientName: "VISIONOS",
+  clientVersion: "1.02",
+  deviceMake: "Apple",
+  deviceModel: "RealityDevice17,1",
+  userAgent:
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+  osName: "visionOS",
+  osVersion: "26.5.23O471",
+};
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+function headerMap(headers = []) {
+  const map = new Map();
+  for (const header of headers) {
+    if (header?.name) {
+      map.set(String(header.name).toLowerCase(), String(header.value ?? ""));
+    }
+  }
+  return map;
+}
+
+function decodedLength(read) {
+  if (!read?.data) return 0;
+  if (read.base64Encoded) return atob(read.data).length;
+  return new TextEncoder().encode(read.data).byteLength;
+}
+
+function publicFormat(format) {
+  if (!format) return null;
+  let host = null;
+  try {
+    host = new URL(format.url).hostname;
+  } catch {}
+  return {
+    itag: format.itag ?? null,
+    mime_type: format.mimeType || null,
+    width: format.width ?? null,
+    height: format.height ?? null,
+    bitrate: format.bitrate ?? null,
+    content_length: format.contentLength || null,
+    host,
+  };
+}
+
+async function openWatchPage(browser, videoId) {
+  const page = await browser.newPage();
+  await page.setRequestInterception(true);
+  page.on("request", (request) => {
+    if (["image", "font", "stylesheet", "media"].includes(request.resourceType())) {
+      request.abort().catch(() => {});
+    } else {
+      request.continue().catch(() => {});
+    }
+  });
+
+  const nav = await page.goto(`https://www.youtube.com/watch?v=${videoId}`, {
+    waitUntil: "domcontentloaded",
+    timeout: 20000,
+  });
+
+  await page
+    .waitForFunction(() => Boolean(globalThis.ytcfg?.get?.("INNERTUBE_API_KEY")), {
+      timeout: 5000,
+    })
+    .catch(() => {});
+
+  return {
+    page,
+    page_http_status: nav?.status() ?? null,
+    page_title: await page.title(),
+  };
+}
+
+async function getVisionOsPlayer(page, videoId) {
+  return page.evaluate(
+    async ({ id, clientDef }) => {
+      const get = globalThis.ytcfg?.get?.bind(globalThis.ytcfg);
+      const context = get ? get("INNERTUBE_CONTEXT") : null;
+      const apiKey = get ? get("INNERTUBE_API_KEY") : null;
+      const visitorData =
+        (get ? get("VISITOR_DATA") : null) || context?.client?.visitorData || null;
+
+      if (!apiKey) return { error: "INNERTUBE_API_KEY not found" };
+
+      const client = {
+        clientName: clientDef.clientName,
+        clientVersion: clientDef.clientVersion,
+        hl: "en",
+        gl: "US",
+        deviceMake: clientDef.deviceMake,
+        deviceModel: clientDef.deviceModel,
+        userAgent: clientDef.userAgent,
+        osName: clientDef.osName,
+        osVersion: clientDef.osVersion,
+        ...(visitorData ? { visitorData } : {}),
+      };
+
+      const response = await fetch(
+        `/youtubei/v1/player?key=${encodeURIComponent(apiKey)}&prettyPrint=false`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+            "X-YouTube-Client-Name": String(clientDef.id),
+            "X-YouTube-Client-Version": clientDef.clientVersion,
+            ...(visitorData ? { "X-Goog-Visitor-Id": visitorData } : {}),
+          },
+          body: JSON.stringify({
+            context: { client },
+            videoId: id,
+            playbackContext: {
+              contentPlaybackContext: {
+                html5Preference: "HTML5_PREF_WANTS",
+              },
+            },
+            contentCheckOk: true,
+            racyCheckOk: true,
+          }),
+        },
+      );
+
+      const player = await response.json();
+      const adaptive = Array.isArray(player?.streamingData?.adaptiveFormats)
+        ? player.streamingData.adaptiveFormats
+        : [];
+      const direct = adaptive.filter((format) => format && typeof format.url === "string");
+      const ciphered = adaptive.filter(
+        (format) => format && !format.url && (format.signatureCipher || format.cipher),
+      );
+      const videoCandidates = direct.filter((format) => {
+        const mime = String(format?.mimeType || "");
+        return mime.includes("video/mp4") && mime.includes("avc1");
+      });
+      const video =
+        videoCandidates.find((format) => Number(format?.height || 0) === 720) ||
+        videoCandidates[0] ||
+        null;
+
+      return {
+        player_http_status: response.status,
+        playability_status: player?.playabilityStatus?.status || null,
+        playability_reason: player?.playabilityStatus?.reason || null,
+        visitor_data_present: Boolean(visitorData),
+        adaptive_count: adaptive.length,
+        direct_adaptive_count: direct.length,
+        ciphered_adaptive_count: ciphered.length,
+        video,
+      };
+    },
+    { id: videoId, clientDef: VISIONOS_CLIENT },
+  );
+}
+
+async function probeRange(browser, format) {
+  const total = Number(format?.contentLength || 0);
+  const start = RANGE_START;
+  const end = total
+    ? Math.min(start + RANGE_LENGTH - 1, total - 1)
+    : start + RANGE_LENGTH - 1;
+  const expected = end - start + 1;
+  const requestedRange = `bytes=${start}-${end}`;
+
+  const page = await browser.newPage();
+  const cdp = await page.target().createCDPSession();
+  let timeoutId;
+  let resolvePaused;
+  let rejectPaused;
+  const pausedPromise = new Promise((resolve, reject) => {
+    resolvePaused = resolve;
+    rejectPaused = reject;
+  });
+
+  try {
+    await page.setUserAgent(VISIONOS_CLIENT.userAgent);
+    await cdp.send("Network.enable");
+    await cdp.send("Network.setExtraHTTPHeaders", {
+      headers: { Range: requestedRange, Accept: "*/*" },
+    });
+    await cdp.send("Fetch.enable", {
+      patterns: [
+        {
+          urlPattern: "*://*.googlevideo.com/videoplayback*",
+          requestStage: "Response",
+        },
+      ],
+    });
+
+    cdp.on("Fetch.requestPaused", (event) => {
+      if (event.request?.url?.includes("googlevideo.com/videoplayback")) {
+        if (timeoutId) clearTimeout(timeoutId);
+        resolvePaused(event);
+      }
+    });
+
+    timeoutId = setTimeout(
+      () => rejectPaused(new Error("Timed out waiting for googlevideo response")),
+      20000,
+    );
+
+    const navPromise = page
+      .goto(format.url, { waitUntil: "domcontentloaded", timeout: 25000 })
+      .catch(() => null);
+
+    const paused = await pausedPromise;
+    const headers = headerMap(paused.responseHeaders || []);
+    const status = paused.responseStatusCode ?? null;
+    const contentRange = headers.get("content-range") || null;
+    const contentType = headers.get("content-type") || null;
+
+    if (status !== 206 || !String(contentRange || "").startsWith(`bytes ${start}-`)) {
+      await cdp
+        .send("Fetch.failRequest", {
+          requestId: paused.requestId,
+          errorReason: "Aborted",
+        })
+        .catch(() => {});
+      await navPromise;
+      return {
+        success: false,
+        status,
+        requested_range: requestedRange,
+        content_range: contentRange,
+        content_type: contentType,
+        received_bytes: 0,
+      };
+    }
+
+    const { stream } = await cdp.send("Fetch.takeResponseBodyAsStream", {
+      requestId: paused.requestId,
+    });
+
+    let received = 0;
+    let readCount = 0;
+    let eof = false;
+    while (!eof) {
+      const remaining = expected - received;
+      const read = await cdp.send("IO.read", {
+        handle: stream,
+        size: Math.min(READ_SIZE, Math.max(remaining, 1)),
+      });
+      received += decodedLength(read);
+      readCount += 1;
+      eof = Boolean(read.eof);
+      if (received > expected) throw new Error(`Received too much data: ${received}`);
+      if (readCount > 128) throw new Error("Too many IO.read calls");
+    }
+
+    await cdp.send("IO.close", { handle: stream }).catch(() => {});
+    await cdp
+      .send("Fetch.failRequest", {
+        requestId: paused.requestId,
+        errorReason: "Aborted",
+      })
+      .catch(() => {});
+    await navPromise;
+
+    return {
+      success: received === expected,
+      status,
+      requested_range: requestedRange,
+      content_range: contentRange,
+      content_type: contentType,
+      received_bytes: received,
+      cdp_read_count: readCount,
+      eof,
+    };
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    await cdp.send("Fetch.disable").catch(() => {});
+    await page.close().catch(() => {});
+  }
+}
+
+async function runProbe(env, videoId) {
+  const started = Date.now();
+  const browser = await puppeteer.launch(env.BROWSER);
+  let resolver;
+  try {
+    resolver = await openWatchPage(browser, videoId);
+    const player = await getVisionOsPlayer(resolver.page, videoId);
+    const result = {
+      result: "visionos-static-probe-complete",
+      browser_session_count: 1,
+      page_http_status: resolver.page_http_status,
+      page_title: resolver.page_title,
+      client: {
+        id: VISIONOS_CLIENT.id,
+        name: VISIONOS_CLIENT.clientName,
+        version: VISIONOS_CLIENT.clientVersion,
+      },
+      player: {
+        player_http_status: player.player_http_status ?? null,
+        playability_status: player.playability_status ?? null,
+        playability_reason: player.playability_reason ?? player.error ?? null,
+        visitor_data_present: player.visitor_data_present ?? false,
+        adaptive_count: player.adaptive_count ?? 0,
+        direct_adaptive_count: player.direct_adaptive_count ?? 0,
+        ciphered_adaptive_count: player.ciphered_adaptive_count ?? 0,
+        selected_video: publicFormat(player.video),
+      },
+      range_probe: null,
+      elapsed_ms: null,
+      local_pc_required: false,
+      browser_run_used: true,
+      paid_cloudflare_feature_used: false,
+    };
+
+    if (player.playability_status === "OK" && player.video?.url) {
+      result.range_probe = await probeRange(browser, player.video);
+    }
+
+    result.elapsed_ms = Date.now() - started;
+    return result;
+  } finally {
+    if (resolver?.page) await resolver.page.close().catch(() => {});
+    await browser.close().catch(() => {});
+  }
+}
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const videoId = url.searchParams.get("v") || TEST_VIDEO_ID;
+    if (videoId !== TEST_VIDEO_ID) {
+      return json({ error: "Fixed test video only" }, 403);
+    }
+
+    try {
+      if (url.pathname === "/probe/visionos") {
+        return json(await runProbe(env, videoId));
+      }
+      return json({
+        service: "youtube-free-browser-visionos-probe",
+        endpoint: "/probe/visionos",
+        fixed_test_video_id: TEST_VIDEO_ID,
+        local_pc_required: false,
+        browser_run_used: true,
+        paid_cloudflare_feature_used: false,
+      });
+    } catch (error) {
+      return json(
+        {
+          result: "worker-error",
+          error: error instanceof Error ? error.message : String(error),
+          local_pc_required: false,
+          browser_run_used: true,
+          paid_cloudflare_feature_used: false,
+        },
+        502,
+      );
+    }
+  },
+};
