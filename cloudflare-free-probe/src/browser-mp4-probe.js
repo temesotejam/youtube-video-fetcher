@@ -3,6 +3,7 @@ import puppeteer from "@cloudflare/puppeteer";
 const TEST_VIDEO_ID = "2NJdNKJ9LPM";
 const PROBE_BYTES = 64 * 1024;
 const VIDEO_OFFSET = 4 * 1024 * 1024;
+const MAX_CHUNK_BYTES = 1024 * 1024;
 const ANDROID_VR = {
   id: 28,
   clientName: "ANDROID_VR",
@@ -121,12 +122,60 @@ async function getAndroidVrVideo(page, videoId) {
   );
 }
 
-async function probeOneRange(browser, format) {
+async function resolveVideoInBrowser(browser, videoId) {
+  const page = await browser.newPage();
+  try {
+    await page.setRequestInterception(true);
+    page.on("request", (request) => {
+      if (["image", "font", "stylesheet", "media"].includes(request.resourceType())) {
+        request.abort();
+      } else {
+        request.continue();
+      }
+    });
+
+    const nav = await page.goto(`https://www.youtube.com/watch?v=${videoId}`, {
+      waitUntil: "domcontentloaded",
+      timeout: 20000,
+    });
+
+    try {
+      await page.waitForFunction(
+        () => Boolean(globalThis.ytcfg?.get?.("INNERTUBE_API_KEY")),
+        { timeout: 5000 },
+      );
+    } catch {
+      // Evaluation below reports missing data if needed.
+    }
+
+    const pageTitle = await page.title();
+    const player = await getAndroidVrVideo(page, videoId);
+    return {
+      page_http_status: nav?.status() ?? null,
+      page_title: pageTitle,
+      player,
+    };
+  } finally {
+    await page.close();
+  }
+}
+
+async function captureRangeResponse(browser, format, start, length, includeBody) {
   const total = Number(format?.contentLength || 0);
-  const start = VIDEO_OFFSET;
+  if (!Number.isSafeInteger(start) || start < 0) {
+    throw new Error("Invalid chunk start");
+  }
+  if (!Number.isSafeInteger(length) || length < 1 || length > MAX_CHUNK_BYTES) {
+    throw new Error(`Chunk length must be 1..${MAX_CHUNK_BYTES}`);
+  }
+  if (total && start >= total) {
+    throw new Error("Chunk start is beyond content length");
+  }
+
   const end = total
-    ? Math.min(start + PROBE_BYTES - 1, total - 1)
-    : start + PROBE_BYTES - 1;
+    ? Math.min(start + length - 1, total - 1)
+    : start + length - 1;
+  const expectedBytes = end - start + 1;
   const requestedRange = `bytes=${start}-${end}`;
   const page = await browser.newPage();
 
@@ -136,7 +185,7 @@ async function probeOneRange(browser, format) {
     let resolveTargetResponse;
     const targetResponse = new Promise((resolve) => {
       resolveTargetResponse = resolve;
-      setTimeout(() => resolve(null), 5000);
+      setTimeout(() => resolve(null), 10000);
     });
 
     page.on("response", (response) => {
@@ -164,43 +213,51 @@ async function probeOneRange(browser, format) {
 
     let gotoError = null;
     const navigation = page
-      .goto(format.url, { waitUntil: "domcontentloaded", timeout: 5000 })
+      .goto(format.url, { waitUntil: "domcontentloaded", timeout: 10000 })
       .catch((error) => {
         gotoError = error instanceof Error ? error.message : String(error);
         return null;
       });
 
     let response = await targetResponse;
+    if (!response) response = await navigation;
     if (!response) {
-      response = await navigation;
-    }
-
-    if (!response) {
-      return {
-        start,
-        end,
-        requested_range: requestedRange,
-        success: false,
-        error: gotoError || "No googlevideo response captured within 5 seconds",
-      };
+      throw new Error(gotoError || "No googlevideo response captured");
     }
 
     const headers = response.headers();
     const status = response.status();
     const contentRange = headers["content-range"] || null;
-    const success =
+    const rangeMatched =
       status === 206 && Boolean(contentRange?.startsWith(`bytes ${start}-`));
+
+    if (!rangeMatched) {
+      throw new Error(
+        `Unexpected upstream range response: status=${status} content-range=${contentRange}`,
+      );
+    }
+
+    let body = null;
+    if (includeBody) {
+      body = await response.buffer();
+      if (body.byteLength !== expectedBytes) {
+        throw new Error(
+          `Chunk body size mismatch: expected ${expectedBytes}, got ${body.byteLength}`,
+        );
+      }
+    }
 
     return {
       start,
       end,
+      expected_bytes: expectedBytes,
       requested_range: requestedRange,
       status,
       content_type: headers["content-type"] || null,
       content_length: headers["content-length"] || null,
       content_range: contentRange,
       goto_error: gotoError,
-      success,
+      body,
     };
   } finally {
     await page.close();
@@ -210,44 +267,14 @@ async function probeOneRange(browser, format) {
 async function runProbe(env, videoId) {
   const started = Date.now();
   const browser = await puppeteer.launch(env.BROWSER);
-
   try {
-    const page = await browser.newPage();
-    await page.setRequestInterception(true);
-    page.on("request", (request) => {
-      if (["image", "font", "stylesheet", "media"].includes(request.resourceType())) {
-        request.abort();
-      } else {
-        request.continue();
-      }
-    });
-
-    const nav = await page.goto(`https://www.youtube.com/watch?v=${videoId}`, {
-      waitUntil: "domcontentloaded",
-      timeout: 20000,
-    });
-
-    try {
-      await page.waitForFunction(
-        () => Boolean(globalThis.ytcfg?.get?.("INNERTUBE_API_KEY")),
-        { timeout: 5000 },
-      );
-    } catch {
-      // Evaluation below will report missing data.
-    }
-
-    const pageTitle = await page.title();
-    const player = await getAndroidVrVideo(page, videoId);
-    await page.close();
-
-    if (
-      player.playability_status !== "OK" ||
-      !player.video?.url
-    ) {
+    const resolved = await resolveVideoInBrowser(browser, videoId);
+    const player = resolved.player;
+    if (player.playability_status !== "OK" || !player.video?.url) {
       return {
         result: "browser-player-no-direct-mp4",
-        page_http_status: nav?.status() ?? null,
-        page_title: pageTitle,
+        page_http_status: resolved.page_http_status,
+        page_title: resolved.page_title,
         elapsed_ms: Date.now() - started,
         player: {
           player_http_status: player.player_http_status ?? null,
@@ -263,13 +290,18 @@ async function runProbe(env, videoId) {
       };
     }
 
-    const range = await probeOneRange(browser, player.video);
+    const range = await captureRangeResponse(
+      browser,
+      player.video,
+      VIDEO_OFFSET,
+      PROBE_BYTES,
+      false,
+    );
+
     return {
-      result: range.success
-        ? "same-browser-nonzero-mp4-range-succeeded"
-        : "same-browser-nonzero-mp4-range-failed",
-      page_http_status: nav?.status() ?? null,
-      page_title: pageTitle,
+      result: "same-browser-nonzero-mp4-range-succeeded",
+      page_http_status: resolved.page_http_status,
+      page_title: resolved.page_title,
       elapsed_ms: Date.now() - started,
       player: {
         player_http_status: player.player_http_status,
@@ -279,7 +311,11 @@ async function runProbe(env, videoId) {
         direct_adaptive_count: player.direct_adaptive_count,
       },
       video_format: publicFormat(player.video),
-      nonzero_range_probe: range,
+      nonzero_range_probe: {
+        ...range,
+        body: undefined,
+        success: true,
+      },
       stream_url_returned_to_client: false,
       full_media_downloaded: false,
       local_pc_required: false,
@@ -291,18 +327,74 @@ async function runProbe(env, videoId) {
   }
 }
 
+async function runChunk(env, videoId, start, length) {
+  const browser = await puppeteer.launch(env.BROWSER);
+  try {
+    const resolved = await resolveVideoInBrowser(browser, videoId);
+    const player = resolved.player;
+    if (player.playability_status !== "OK" || !player.video?.url) {
+      throw new Error(
+        `Player not OK: ${player.playability_status || "unknown"} ${player.playability_reason || player.error || ""}`,
+      );
+    }
+
+    const chunk = await captureRangeResponse(
+      browser,
+      player.video,
+      start,
+      length,
+      true,
+    );
+
+    const headers = new Headers({
+      "Content-Type": chunk.content_type || "application/octet-stream",
+      "Content-Length": String(chunk.body.byteLength),
+      "Cache-Control": "no-store, max-age=0",
+      "X-Upstream-Status": String(chunk.status),
+      "X-Upstream-Content-Range": chunk.content_range || "",
+      "X-Chunk-Start": String(chunk.start),
+      "X-Chunk-End": String(chunk.end),
+      "X-Source-Itag": String(player.video.itag ?? ""),
+      "X-Source-Total-Bytes": String(player.video.contentLength || ""),
+      "X-Browser-Run": "true",
+      "X-Paid-Cloudflare-Feature": "false",
+    });
+
+    return new Response(chunk.body, { status: 200, headers });
+  } finally {
+    await browser.close();
+  }
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname !== "/probe/ranges") {
-      return json({ error: "Not found" }, 404);
-    }
     const videoId = url.searchParams.get("v") || TEST_VIDEO_ID;
     if (videoId !== TEST_VIDEO_ID) {
       return json({ error: "Fixed test video only" }, 403);
     }
+
     try {
-      return json(await runProbe(env, videoId));
+      if (url.pathname === "/probe/ranges") {
+        return json(await runProbe(env, videoId));
+      }
+
+      if (url.pathname === "/chunk/video") {
+        const start = Number(url.searchParams.get("start") ?? VIDEO_OFFSET);
+        const length = Number(url.searchParams.get("length") ?? MAX_CHUNK_BYTES);
+        return await runChunk(env, videoId, start, length);
+      }
+
+      return json(
+        {
+          service: "youtube-free-browser-mp4-probe",
+          endpoints: ["/probe/ranges", "/chunk/video"],
+          max_chunk_bytes: MAX_CHUNK_BYTES,
+          local_pc_required: false,
+          paid_cloudflare_feature_used: false,
+        },
+        url.pathname === "/" || url.pathname === "/health" ? 200 : 404,
+      );
     } catch (error) {
       return json(
         {
