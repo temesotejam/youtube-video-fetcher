@@ -37,3 +37,11 @@ jobs:
 
       - name: Show deployment URL
         run: echo "${{ steps.deploy.outputs.deployment-url }}"
+
+      - name: Run one free Browser Run probe
+        env:
+          PROBE_BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          echo "Running one metadata-only Browser Run probe; no media download."
+          curl -sS --fail-with-body --max-time 45 "${PROBE_BASE_URL}/probe?v=2NJdNKJ9LPM"
+          echo
