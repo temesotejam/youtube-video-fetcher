@@ -3,7 +3,7 @@ import puppeteer from "@cloudflare/puppeteer";
 const TEST_VIDEO_ID = "2NJdNKJ9LPM";
 const SEGMENT_LENGTH = 4 * 1024 * 1024;
 const READ_SIZE = 64 * 1024;
-const URL_REFRESH_SEGMENTS = 4;
+const VIDEO_URL_REFRESH_SEGMENTS = 4;
 
 const VISIONOS_CLIENT = {
   id: 101,
@@ -323,7 +323,11 @@ async function streamFullFormat(env, kind) {
               return;
             }
 
-            if (segmentIndex > 0 && segmentIndex % URL_REFRESH_SEGMENTS === 0) {
+            if (
+              kind === "video" &&
+              segmentIndex > 0 &&
+              segmentIndex % VIDEO_URL_REFRESH_SEGMENTS === 0
+            ) {
               await refreshFormat();
             }
 
@@ -384,7 +388,7 @@ async function streamFullFormat(env, kind) {
         "X-Segment-Count": String(segmentCount),
         "X-Segment-Bytes": String(SEGMENT_LENGTH),
         "X-CDP-Read-Size": String(READ_SIZE),
-        "X-URL-Refresh-Segments": String(URL_REFRESH_SEGMENTS),
+        "X-URL-Refresh-Segments": kind === "video" ? String(VIDEO_URL_REFRESH_SEGMENTS) : "0",
         "X-Capture-Method": "visionos-cdp-full-segmented-stream",
         "X-Media-Kind": kind,
         "X-Browser-Run": "true",
@@ -409,7 +413,8 @@ export default {
         fixed_test_video_id: TEST_VIDEO_ID,
         segment_length: SEGMENT_LENGTH,
         read_size: READ_SIZE,
-        url_refresh_segments: URL_REFRESH_SEGMENTS,
+        video_url_refresh_segments: VIDEO_URL_REFRESH_SEGMENTS,
+        audio_url_refresh_segments: 0,
         local_pc_required: false,
         browser_run_used: true,
         paid_cloudflare_feature_used: false,
