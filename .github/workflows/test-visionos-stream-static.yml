@@ -1,4 +1,4 @@
-name: Test static VISIONOS segmented stream
+name: Test full VISIONOS media fetch
 
 on:
   workflow_dispatch:
@@ -24,11 +24,11 @@ jobs:
         working-directory: cloudflare-free-probe
         run: npm install --no-audit --no-fund
 
-      - name: Check segmented Worker syntax
+      - name: Check full-stream Worker syntax
         working-directory: cloudflare-free-probe
         run: node --check src/browser-mp4-visionos-segmented-stream-probe.js
 
-      - name: Deploy static segmented Worker
+      - name: Deploy static full-stream Worker
         id: deploy
         uses: cloudflare/wrangler-action@v4
         with:
@@ -37,30 +37,71 @@ jobs:
           workingDirectory: cloudflare-free-probe
           command: deploy --config wrangler-visionos-stream-probe.jsonc
 
-      - name: Stream 16 MiB as four 4 MiB ranges
+      - name: Fetch full video-only MP4
         env:
           BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
         run: |
           set -euo pipefail
           sleep 5
           mkdir -p output
-          set +e
-          CODE=$(curl -sS --max-time 120 -D output/headers.txt -o output/chunk.bin -w "%{http_code}" "${BASE_URL%/}/stream/video")
-          CURL_RC=$?
-          set -e
-          echo "curl_rc=$CURL_RC"
+          CODE=$(curl -sS --max-time 300 -D output/video.headers.txt -o output/video-only.mp4 -w "%{http_code}" "${BASE_URL%/}/stream/video")
           echo "http_code=$CODE"
-          wc -c output/chunk.bin
-          grep -i -E '^(content-type|content-length|x-upstream-status|x-logical-content-range|x-source-itag|x-source-total-bytes|x-segment-count|x-segment-bytes|x-cdp-read-size|x-capture-method):' output/headers.txt || true
-          if [ "$CURL_RC" -ne 0 ] || [ "$CODE" != "200" ]; then
-            exit 1
-          fi
-          sha256sum output/chunk.bin
-          test "$(stat -c%s output/chunk.bin)" -eq 16777216
-          grep -qi '^x-upstream-status: 206' output/headers.txt
-          grep -qi '^x-source-itag: 298' output/headers.txt
-          grep -qi '^x-segment-count: 4' output/headers.txt
-          grep -qi '^x-segment-bytes: 4194304' output/headers.txt
-          grep -qi '^x-cdp-read-size: 65536' output/headers.txt
-          grep -qi '^x-capture-method: visionos-cdp-segmented-stream' output/headers.txt
-          grep -qi '^x-logical-content-range: bytes 20971520-37748735/80955133' output/headers.txt
+          test "$CODE" = "200"
+          VIDEO_EXPECTED=$(grep -i '^x-source-total-bytes:' output/video.headers.txt | tail -1 | awk '{print $2}' | tr -d '\r')
+          VIDEO_ACTUAL=$(stat -c%s output/video-only.mp4)
+          echo "video_expected=$VIDEO_EXPECTED"
+          echo "video_actual=$VIDEO_ACTUAL"
+          test "$VIDEO_ACTUAL" -eq "$VIDEO_EXPECTED"
+          grep -qi '^content-type: video/mp4' output/video.headers.txt
+          grep -qi '^x-upstream-status: 206' output/video.headers.txt
+          grep -qi '^x-source-itag: 298' output/video.headers.txt
+          grep -qi '^x-capture-method: visionos-cdp-full-segmented-stream' output/video.headers.txt
+          sha256sum output/video-only.mp4
+
+      - name: Respect Browser Run session interval
+        run: sleep 20
+
+      - name: Fetch full audio-only MP4
+        env:
+          BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          set -euo pipefail
+          CODE=$(curl -sS --max-time 180 -D output/audio.headers.txt -o output/audio-only.m4a -w "%{http_code}" "${BASE_URL%/}/stream/audio")
+          echo "http_code=$CODE"
+          test "$CODE" = "200"
+          AUDIO_EXPECTED=$(grep -i '^x-source-total-bytes:' output/audio.headers.txt | tail -1 | awk '{print $2}' | tr -d '\r')
+          AUDIO_ACTUAL=$(stat -c%s output/audio-only.m4a)
+          echo "audio_expected=$AUDIO_EXPECTED"
+          echo "audio_actual=$AUDIO_ACTUAL"
+          test "$AUDIO_ACTUAL" -eq "$AUDIO_EXPECTED"
+          grep -qi '^content-type: audio/mp4' output/audio.headers.txt
+          grep -qi '^x-upstream-status: 206' output/audio.headers.txt
+          grep -qi '^x-capture-method: visionos-cdp-full-segmented-stream' output/audio.headers.txt
+          grep -i -E '^(x-source-itag|x-source-total-bytes|x-segment-count):' output/audio.headers.txt || true
+          sha256sum output/audio-only.m4a
+
+      - name: Remux video and audio
+        run: |
+          set -euo pipefail
+          command -v ffmpeg
+          command -v ffprobe
+          ffmpeg -y -loglevel warning \
+            -i output/video-only.mp4 \
+            -i output/audio-only.m4a \
+            -map 0:v:0 -map 1:a:0 \
+            -c copy output/video.mp4
+          ffprobe -v error -show_entries format=duration,size -show_entries stream=index,codec_type,codec_name -of json output/video.mp4 | tee output/ffprobe.json
+          sha256sum output/video.mp4
+
+      - name: Upload fixed-test MP4 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-visionos-fixed-test
+          retention-days: 1
+          path: |
+            output/video.mp4
+            output/video-only.mp4
+            output/audio-only.m4a
+            output/video.headers.txt
+            output/audio.headers.txt
+            output/ffprobe.json
