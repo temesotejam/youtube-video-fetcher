@@ -1,8 +1,6 @@
 import puppeteer from "@cloudflare/puppeteer";
 
 const TEST_VIDEO_ID = "2NJdNKJ9LPM";
-const RANGE_START = 20 * 1024 * 1024;
-const RANGE_LENGTH = 16 * 1024 * 1024;
 const SEGMENT_LENGTH = 4 * 1024 * 1024;
 const READ_SIZE = 64 * 1024;
 
@@ -31,9 +29,7 @@ function json(data, status = 200) {
 function headerMap(headers = []) {
   const map = new Map();
   for (const header of headers) {
-    if (header?.name) {
-      map.set(String(header.name).toLowerCase(), String(header.value ?? ""));
-    }
+    if (header?.name) map.set(String(header.name).toLowerCase(), String(header.value ?? ""));
   }
   return map;
 }
@@ -43,15 +39,13 @@ function decodeIoData(read) {
   if (read.base64Encoded) {
     const binary = atob(read.data);
     const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) {
-      bytes[i] = binary.charCodeAt(i) & 0xff;
-    }
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i) & 0xff;
     return bytes;
   }
   return new TextEncoder().encode(read.data);
 }
 
-async function resolveVideo(browser) {
+async function resolveFormats(browser) {
   const page = await browser.newPage();
   try {
     await page.setRequestInterception(true);
@@ -111,9 +105,7 @@ async function resolveVideo(browser) {
               context: { client },
               videoId,
               playbackContext: {
-                contentPlaybackContext: {
-                  html5Preference: "HTML5_PREF_WANTS",
-                },
+                contentPlaybackContext: { html5Preference: "HTML5_PREF_WANTS" },
               },
               contentCheckOk: true,
               racyCheckOk: true,
@@ -127,18 +119,29 @@ async function resolveVideo(browser) {
               (format) => format && typeof format.url === "string",
             )
           : [];
+
         const videos = adaptive.filter((format) => {
           const mime = String(format?.mimeType || "");
           return mime.includes("video/mp4") && mime.includes("avc1");
         });
+        const audios = adaptive.filter((format) => {
+          const mime = String(format?.mimeType || "");
+          return mime.includes("audio/mp4") && mime.includes("mp4a");
+        });
+
         const video =
           videos.find((format) => Number(format?.height || 0) === 720) || videos[0] || null;
+        const audio =
+          audios.find((format) => Number(format?.itag) === 140) ||
+          audios.sort((a, b) => Number(b?.bitrate || 0) - Number(a?.bitrate || 0))[0] ||
+          null;
 
         return {
           player_http_status: response.status,
           playability_status: data?.playabilityStatus?.status || null,
           playability_reason: data?.playabilityStatus?.reason || null,
           video,
+          audio,
         };
       },
       { videoId: TEST_VIDEO_ID, clientDef: VISIONOS_CLIENT },
@@ -199,7 +202,7 @@ async function prepareSegment(browser, format, start, length) {
     const headers = headerMap(paused.responseHeaders || []);
     const status = paused.responseStatusCode ?? null;
     const contentRange = headers.get("content-range") || null;
-    const contentType = headers.get("content-type") || "video/mp4";
+    const contentType = headers.get("content-type") || "application/octet-stream";
 
     if (status !== 206 || contentRange !== `bytes ${start}-${end}/${sourceTotal}`) {
       await cdp
@@ -239,13 +242,8 @@ async function prepareSegment(browser, format, start, length) {
       cdp,
       stream,
       expected,
-      start,
-      end,
-      status,
-      contentRange,
-      contentType,
       sent: 0,
-      readCount: 0,
+      contentType,
       cleanup,
     };
   } catch (error) {
@@ -256,7 +254,7 @@ async function prepareSegment(browser, format, start, length) {
   }
 }
 
-async function streamSegmentedRange(env) {
+async function streamFullFormat(env, kind) {
   const browser = await puppeteer.launch(env.BROWSER);
   let closed = false;
   const closeBrowser = async () => {
@@ -266,18 +264,20 @@ async function streamSegmentedRange(env) {
   };
 
   try {
-    const player = await resolveVideo(browser);
-    if (player.playability_status !== "OK" || !player.video?.url) {
+    const player = await resolveFormats(browser);
+    const format = kind === "audio" ? player.audio : player.video;
+    if (player.playability_status !== "OK" || !format?.url) {
       throw new Error(
-        `Player not OK: ${player.playability_status || "unknown"} ${player.playability_reason || player.error || ""}`,
+        `Player not OK for ${kind}: ${player.playability_status || "unknown"} ${player.playability_reason || player.error || ""}`,
       );
     }
 
-    const sourceTotal = Number(player.video.contentLength || 0);
-    const logicalEnd = Math.min(RANGE_START + RANGE_LENGTH - 1, sourceTotal - 1);
-    const totalExpected = logicalEnd - RANGE_START + 1;
-    const segmentCount = Math.ceil(totalExpected / SEGMENT_LENGTH);
+    const sourceTotal = Number(format.contentLength || 0);
+    if (!Number.isFinite(sourceTotal) || sourceTotal <= 0) {
+      throw new Error(`Missing contentLength for ${kind}`);
+    }
 
+    const segmentCount = Math.ceil(sourceTotal / SEGMENT_LENGTH);
     let segmentIndex = 0;
     let current = null;
     let totalSent = 0;
@@ -294,9 +294,9 @@ async function streamSegmentedRange(env) {
         try {
           if (!current) {
             if (segmentIndex >= segmentCount) {
-              if (totalSent !== totalExpected) {
+              if (totalSent !== sourceTotal) {
                 throw new Error(
-                  `Logical stream size mismatch: expected ${totalExpected}, got ${totalSent}`,
+                  `Full stream size mismatch: expected ${sourceTotal}, got ${totalSent}`,
                 );
               }
               controller.close();
@@ -304,15 +304,9 @@ async function streamSegmentedRange(env) {
               return;
             }
 
-            const segmentStart = RANGE_START + segmentIndex * SEGMENT_LENGTH;
-            const remainingLogical = totalExpected - segmentIndex * SEGMENT_LENGTH;
-            const segmentLength = Math.min(SEGMENT_LENGTH, remainingLogical);
-            current = await prepareSegment(
-              browser,
-              player.video,
-              segmentStart,
-              segmentLength,
-            );
+            const segmentStart = segmentIndex * SEGMENT_LENGTH;
+            const segmentLength = Math.min(SEGMENT_LENGTH, sourceTotal - segmentStart);
+            current = await prepareSegment(browser, format, segmentStart, segmentLength);
           }
 
           const remaining = current.expected - current.sent;
@@ -330,7 +324,6 @@ async function streamSegmentedRange(env) {
             totalSent += chunk.byteLength;
             controller.enqueue(chunk);
           }
-          current.readCount += 1;
 
           if (read.eof) {
             if (current.sent !== current.expected) {
@@ -353,20 +346,24 @@ async function streamSegmentedRange(env) {
       },
     });
 
+    const mime = String(format.mimeType || (kind === "audio" ? "audio/mp4" : "video/mp4"));
+    const contentType = mime.split(";")[0];
+
     return new Response(body, {
       status: 200,
       headers: {
-        "Content-Type": "video/mp4",
-        "Content-Length": String(totalExpected),
+        "Content-Type": contentType,
+        "Content-Length": String(sourceTotal),
         "Cache-Control": "no-store",
         "X-Upstream-Status": "206",
-        "X-Logical-Content-Range": `bytes ${RANGE_START}-${logicalEnd}/${sourceTotal}`,
-        "X-Source-Itag": String(player.video.itag ?? ""),
-        "X-Source-Total-Bytes": String(player.video.contentLength || ""),
+        "X-Logical-Content-Range": `bytes 0-${sourceTotal - 1}/${sourceTotal}`,
+        "X-Source-Itag": String(format.itag ?? ""),
+        "X-Source-Total-Bytes": String(sourceTotal),
         "X-Segment-Count": String(segmentCount),
         "X-Segment-Bytes": String(SEGMENT_LENGTH),
         "X-CDP-Read-Size": String(READ_SIZE),
-        "X-Capture-Method": "visionos-cdp-segmented-stream",
+        "X-Capture-Method": "visionos-cdp-full-segmented-stream",
+        "X-Media-Kind": kind,
         "X-Browser-Run": "true",
         "X-Paid-Cloudflare-Feature": "false",
       },
@@ -381,15 +378,12 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     try {
-      if (url.pathname === "/stream/video") {
-        return await streamSegmentedRange(env);
-      }
+      if (url.pathname === "/stream/video") return await streamFullFormat(env, "video");
+      if (url.pathname === "/stream/audio") return await streamFullFormat(env, "audio");
       return json({
-        service: "youtube-free-browser-visionos-segmented-stream-probe",
-        endpoint: "/stream/video",
+        service: "youtube-free-browser-visionos-full-stream-probe",
+        endpoints: ["/stream/video", "/stream/audio"],
         fixed_test_video_id: TEST_VIDEO_ID,
-        range_start: RANGE_START,
-        range_length: RANGE_LENGTH,
         segment_length: SEGMENT_LENGTH,
         read_size: READ_SIZE,
         local_pc_required: false,
