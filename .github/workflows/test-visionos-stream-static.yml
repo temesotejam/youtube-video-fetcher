@@ -1,4 +1,4 @@
-name: Test static VISIONOS streaming response
+name: Test static VISIONOS segmented stream
 
 on:
   workflow_dispatch:
@@ -7,6 +7,8 @@ on:
       - experimental-cloudflare-free-browser
     paths:
       - ".github/workflows/test-visionos-stream-static.yml"
+      - "cloudflare-free-probe/src/browser-mp4-visionos-segmented-stream-probe.js"
+      - "cloudflare-free-probe/wrangler-visionos-stream-probe.jsonc"
 
 permissions:
   contents: read
@@ -22,11 +24,11 @@ jobs:
         working-directory: cloudflare-free-probe
         run: npm install --no-audit --no-fund
 
-      - name: Check streaming Worker syntax
+      - name: Check segmented Worker syntax
         working-directory: cloudflare-free-probe
-        run: node --check src/browser-mp4-visionos-stream-probe.js
+        run: node --check src/browser-mp4-visionos-segmented-stream-probe.js
 
-      - name: Deploy static streaming Worker
+      - name: Deploy static segmented Worker
         id: deploy
         uses: cloudflare/wrangler-action@v4
         with:
@@ -35,7 +37,7 @@ jobs:
           workingDirectory: cloudflare-free-probe
           command: deploy --config wrangler-visionos-stream-probe.jsonc
 
-      - name: Stream fixed 16 MiB range with 256 KiB CDP reads
+      - name: Stream 16 MiB as four 4 MiB ranges
         env:
           BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
         run: |
@@ -49,18 +51,16 @@ jobs:
           echo "curl_rc=$CURL_RC"
           echo "http_code=$CODE"
           wc -c output/chunk.bin
-          grep -i -E '^(content-type|content-length|x-upstream-status|x-upstream-content-range|x-source-itag|x-source-total-bytes|x-capture-method):' output/headers.txt || true
+          grep -i -E '^(content-type|content-length|x-upstream-status|x-logical-content-range|x-source-itag|x-source-total-bytes|x-segment-count|x-segment-bytes|x-cdp-read-size|x-capture-method):' output/headers.txt || true
           if [ "$CURL_RC" -ne 0 ] || [ "$CODE" != "200" ]; then
-            python3 - <<'PY'
-          from pathlib import Path
-          p = Path('output/chunk.bin')
-          print(p.read_bytes()[:1200].decode('utf-8', errors='replace'))
-          PY
             exit 1
           fi
           sha256sum output/chunk.bin
           test "$(stat -c%s output/chunk.bin)" -eq 16777216
           grep -qi '^x-upstream-status: 206' output/headers.txt
           grep -qi '^x-source-itag: 298' output/headers.txt
-          grep -qi '^x-capture-method: visionos-cdp-readable-stream' output/headers.txt
-          grep -qi '^x-upstream-content-range: bytes 20971520-37748735/80955133' output/headers.txt
+          grep -qi '^x-segment-count: 4' output/headers.txt
+          grep -qi '^x-segment-bytes: 4194304' output/headers.txt
+          grep -qi '^x-cdp-read-size: 65536' output/headers.txt
+          grep -qi '^x-capture-method: visionos-cdp-segmented-stream' output/headers.txt
+          grep -qi '^x-logical-content-range: bytes 20971520-37748735/80955133' output/headers.txt
