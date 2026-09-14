@@ -3,6 +3,7 @@ import puppeteer from "@cloudflare/puppeteer";
 const TEST_VIDEO_ID = "2NJdNKJ9LPM";
 const SEGMENT_LENGTH = 4 * 1024 * 1024;
 const READ_SIZE = 64 * 1024;
+const URL_REFRESH_SEGMENTS = 4;
 
 const VISIONOS_CLIENT = {
   id: 101,
@@ -151,6 +152,10 @@ async function resolveFormats(browser) {
   }
 }
 
+function chooseFormat(player, kind) {
+  return kind === "audio" ? player.audio : player.video;
+}
+
 async function prepareSegment(browser, format, start, length) {
   const sourceTotal = Number(format?.contentLength || 0);
   const end = Math.min(start + length - 1, sourceTotal - 1);
@@ -202,7 +207,6 @@ async function prepareSegment(browser, format, start, length) {
     const headers = headerMap(paused.responseHeaders || []);
     const status = paused.responseStatusCode ?? null;
     const contentRange = headers.get("content-range") || null;
-    const contentType = headers.get("content-type") || "application/octet-stream";
 
     if (status !== 206 || contentRange !== `bytes ${start}-${end}/${sourceTotal}`) {
       await cdp
@@ -243,7 +247,6 @@ async function prepareSegment(browser, format, start, length) {
       stream,
       expected,
       sent: 0,
-      contentType,
       cleanup,
     };
   } catch (error) {
@@ -264,8 +267,8 @@ async function streamFullFormat(env, kind) {
   };
 
   try {
-    const player = await resolveFormats(browser);
-    const format = kind === "audio" ? player.audio : player.video;
+    let player = await resolveFormats(browser);
+    let format = chooseFormat(player, kind);
     if (player.playability_status !== "OK" || !format?.url) {
       throw new Error(
         `Player not OK for ${kind}: ${player.playability_status || "unknown"} ${player.playability_reason || player.error || ""}`,
@@ -277,10 +280,26 @@ async function streamFullFormat(env, kind) {
       throw new Error(`Missing contentLength for ${kind}`);
     }
 
+    const initialItag = Number(format.itag || 0);
     const segmentCount = Math.ceil(sourceTotal / SEGMENT_LENGTH);
     let segmentIndex = 0;
     let current = null;
     let totalSent = 0;
+
+    const refreshFormat = async () => {
+      player = await resolveFormats(browser);
+      const refreshed = chooseFormat(player, kind);
+      if (player.playability_status !== "OK" || !refreshed?.url) {
+        throw new Error(`Unable to refresh ${kind} format`);
+      }
+      if (Number(refreshed.contentLength || 0) !== sourceTotal) {
+        throw new Error(`Refreshed ${kind} contentLength changed`);
+      }
+      if (Number(refreshed.itag || 0) !== initialItag) {
+        throw new Error(`Refreshed ${kind} itag changed`);
+      }
+      format = refreshed;
+    };
 
     const cleanupCurrent = async () => {
       if (!current) return;
@@ -302,6 +321,10 @@ async function streamFullFormat(env, kind) {
               controller.close();
               await closeBrowser();
               return;
+            }
+
+            if (segmentIndex > 0 && segmentIndex % URL_REFRESH_SEGMENTS === 0) {
+              await refreshFormat();
             }
 
             const segmentStart = segmentIndex * SEGMENT_LENGTH;
@@ -353,15 +376,15 @@ async function streamFullFormat(env, kind) {
       status: 200,
       headers: {
         "Content-Type": contentType,
-        "Content-Length": String(sourceTotal),
         "Cache-Control": "no-store",
         "X-Upstream-Status": "206",
         "X-Logical-Content-Range": `bytes 0-${sourceTotal - 1}/${sourceTotal}`,
-        "X-Source-Itag": String(format.itag ?? ""),
+        "X-Source-Itag": String(initialItag),
         "X-Source-Total-Bytes": String(sourceTotal),
         "X-Segment-Count": String(segmentCount),
         "X-Segment-Bytes": String(SEGMENT_LENGTH),
         "X-CDP-Read-Size": String(READ_SIZE),
+        "X-URL-Refresh-Segments": String(URL_REFRESH_SEGMENTS),
         "X-Capture-Method": "visionos-cdp-full-segmented-stream",
         "X-Media-Kind": kind,
         "X-Browser-Run": "true",
@@ -386,6 +409,7 @@ export default {
         fixed_test_video_id: TEST_VIDEO_ID,
         segment_length: SEGMENT_LENGTH,
         read_size: READ_SIZE,
+        url_refresh_segments: URL_REFRESH_SEGMENTS,
         local_pc_required: false,
         browser_run_used: true,
         paid_cloudflare_feature_used: false,
