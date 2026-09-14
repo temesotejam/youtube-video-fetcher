@@ -1,0 +1,297 @@
+name: Test GitHub-direct YouTube MP4 ranges
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experimental-cloudflare-free-browser
+    paths:
+      - ".github/workflows/test-github-direct-youtube-range.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe direct MP4 ranges from GitHub runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Probe YouTube directly from this GitHub runner
+        run: |
+          python3 - <<'PY'
+          import json
+          import re
+          import sys
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          VIDEO_ID = "2NJdNKJ9LPM"
+          DESKTOP_UA = (
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/152.0.0.0 Safari/537.36"
+          )
+          ANDROID_VR_UA = (
+              "com.google.android.apps.youtube.vr.oculus/1.65.10 "
+              "(Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
+          )
+          CLIENT_ID = 28
+          CLIENT_NAME = "ANDROID_VR"
+          CLIENT_VERSION = "1.65.10"
+          PROBE_BYTES = 64 * 1024
+          OFFSETS = [0, 4 * 1024 * 1024, 8 * 1024 * 1024]
+
+          def request(url, *, method="GET", headers=None, data=None, timeout=30):
+              req = urllib.request.Request(
+                  url,
+                  data=data,
+                  headers=headers or {},
+                  method=method,
+              )
+              return urllib.request.urlopen(req, timeout=timeout)
+
+          def decode_js_string(value):
+              if value is None:
+                  return None
+              return (
+                  value.replace("\\u0026", "&")
+                  .replace("\\u003d", "=")
+                  .replace("\\u002f", "/")
+                  .replace("\\/", "/")
+              )
+
+          print("=== GitHub-direct YouTube range probe ===", flush=True)
+          print(f"video_id={VIDEO_ID}", flush=True)
+          print("No Cloudflare media relay is used in this probe.", flush=True)
+
+          # 1) Harvest a current Innertube API key and visitor data from YouTube itself.
+          embed_url = f"https://www.youtube.com/embed/{VIDEO_ID}?html5=1"
+          try:
+              with request(
+                  embed_url,
+                  headers={
+                      "User-Agent": DESKTOP_UA,
+                      "Accept": "text/html,application/xhtml+xml,*/*",
+                      "Accept-Language": "en-US,en;q=0.9",
+                  },
+                  timeout=30,
+              ) as response:
+                  embed_status = response.status
+                  html = response.read().decode("utf-8", errors="replace")
+          except Exception as exc:
+              print(f"FAIL: embed page request failed: {exc}", flush=True)
+              sys.exit(1)
+
+          lower = html.lower()
+          bot = (
+              "sign in to confirm you're not a bot" in lower
+              or "unusual traffic" in lower
+              or "verify it's you" in lower
+          )
+          api_key_match = re.search(r'"INNERTUBE_API_KEY":"([^"]+)"', html)
+          visitor_match = (
+              re.search(r'"VISITOR_DATA":"([^"]+)"', html)
+              or re.search(r'"visitorData":"([^"]+)"', html)
+          )
+          api_key = decode_js_string(api_key_match.group(1)) if api_key_match else None
+          visitor_data = (
+              decode_js_string(visitor_match.group(1)) if visitor_match else None
+          )
+
+          print(f"embed_http_status={embed_status}", flush=True)
+          print(f"bot_challenge={str(bot).lower()}", flush=True)
+          print(f"api_key_present={str(bool(api_key)).lower()}", flush=True)
+          print(f"visitor_data_present={str(bool(visitor_data)).lower()}", flush=True)
+
+          if bot:
+              print("FAIL: GitHub runner received a bot challenge on the embed page.", flush=True)
+              sys.exit(2)
+          if not api_key:
+              print("FAIL: INNERTUBE_API_KEY was not found.", flush=True)
+              sys.exit(3)
+
+          # 2) Ask the Player API from the same GitHub job/IP context.
+          client = {
+              "clientName": CLIENT_NAME,
+              "clientVersion": CLIENT_VERSION,
+              "hl": "en",
+              "gl": "US",
+              "userAgent": ANDROID_VR_UA,
+              "deviceMake": "Oculus",
+              "deviceModel": "Quest 3",
+              "androidSdkVersion": 32,
+              "osName": "Android",
+              "osVersion": "12L",
+          }
+          if visitor_data:
+              client["visitorData"] = visitor_data
+
+          body = {
+              "context": {"client": client},
+              "videoId": VIDEO_ID,
+              "playbackContext": {
+                  "contentPlaybackContext": {"html5Preference": "HTML5_PREF_WANTS"}
+              },
+              "contentCheckOk": True,
+              "racyCheckOk": True,
+          }
+          payload = json.dumps(body).encode("utf-8")
+          player_url = (
+              "https://www.youtube.com/youtubei/v1/player?key="
+              + urllib.parse.quote(api_key, safe="")
+              + "&prettyPrint=false"
+          )
+          player_headers = {
+              "Content-Type": "application/json",
+              "X-YouTube-Client-Name": str(CLIENT_ID),
+              "X-YouTube-Client-Version": CLIENT_VERSION,
+              "User-Agent": ANDROID_VR_UA,
+              "Origin": "https://www.youtube.com",
+          }
+          if visitor_data:
+              player_headers["X-Goog-Visitor-Id"] = visitor_data
+
+          try:
+              with request(
+                  player_url,
+                  method="POST",
+                  headers=player_headers,
+                  data=payload,
+                  timeout=30,
+              ) as response:
+                  player_status = response.status
+                  player = json.loads(response.read().decode("utf-8"))
+          except Exception as exc:
+              print(f"FAIL: player API request failed: {exc}", flush=True)
+              sys.exit(4)
+
+          playability = player.get("playabilityStatus", {})
+          status = playability.get("status")
+          reason = playability.get("reason")
+          streaming = player.get("streamingData", {})
+          adaptive = [
+              f for f in streaming.get("adaptiveFormats", [])
+              if isinstance(f, dict) and isinstance(f.get("url"), str)
+          ]
+
+          def is_video_mp4(f):
+              mime = str(f.get("mimeType", ""))
+              return "video/mp4" in mime and "avc1" in mime
+
+          video_candidates = [f for f in adaptive if is_video_mp4(f)]
+          video = next(
+              (f for f in video_candidates if int(f.get("height") or 0) == 720),
+              video_candidates[0] if video_candidates else None,
+          )
+          audio = next(
+              (
+                  f for f in adaptive
+                  if f.get("itag") == 140 and "audio/mp4" in str(f.get("mimeType", ""))
+              ),
+              next(
+                  (f for f in adaptive if "audio/mp4" in str(f.get("mimeType", ""))),
+                  None,
+              ),
+          )
+
+          print(f"player_http_status={player_status}", flush=True)
+          print(f"playability_status={status}", flush=True)
+          print(f"playability_reason={reason}", flush=True)
+          print(f"direct_adaptive_count={len(adaptive)}", flush=True)
+          print(f"video_mp4_found={str(video is not None).lower()}", flush=True)
+          print(f"audio_mp4_found={str(audio is not None).lower()}", flush=True)
+
+          if status != "OK":
+              print("FAIL: Player API did not return OK.", flush=True)
+              sys.exit(5)
+          if video is None or audio is None:
+              print("FAIL: Direct MP4 video/audio pair was not found.", flush=True)
+              sys.exit(6)
+
+          print(
+              "video_format="
+              f"itag={video.get('itag')} height={video.get('height')} "
+              f"content_length={video.get('contentLength')} "
+              f"mime={video.get('mimeType')}",
+              flush=True,
+          )
+          print(
+              "audio_format="
+              f"itag={audio.get('itag')} content_length={audio.get('contentLength')} "
+              f"mime={audio.get('mimeType')}",
+              flush=True,
+          )
+
+          def probe_ranges(label, fmt, offsets):
+              total = int(fmt.get("contentLength") or 0)
+              results = []
+              host = urllib.parse.urlparse(fmt["url"]).hostname
+              print(f"{label}_host={host}", flush=True)
+              for start in offsets:
+                  if total and start >= total:
+                      continue
+                  end = start + PROBE_BYTES - 1
+                  if total:
+                      end = min(end, total - 1)
+                  headers = {
+                      "Range": f"bytes={start}-{end}",
+                      "User-Agent": ANDROID_VR_UA,
+                      "Accept": "*/*",
+                  }
+                  try:
+                      with request(fmt["url"], headers=headers, timeout=30) as response:
+                          http_status = response.status
+                          content_range = response.headers.get("Content-Range")
+                          content_type = response.headers.get("Content-Type")
+                          body = response.read(PROBE_BYTES + 1)
+                      size = len(body)
+                      ok = http_status in (200, 206) and size > 0
+                      if start > 0:
+                          ok = ok and http_status == 206 and bool(content_range)
+                      print(
+                          f"{label}_range start={start} end={end} "
+                          f"status={http_status} bytes={size} "
+                          f"content_range={content_range} content_type={content_type} "
+                          f"ok={str(ok).lower()}",
+                          flush=True,
+                      )
+                      results.append(ok)
+                  except urllib.error.HTTPError as exc:
+                      print(
+                          f"{label}_range start={start} end={end} "
+                          f"status={exc.code} error={exc.reason} ok=false",
+                          flush=True,
+                      )
+                      results.append(False)
+                  except Exception as exc:
+                      print(
+                          f"{label}_range start={start} end={end} "
+                          f"error={exc} ok=false",
+                          flush=True,
+                      )
+                      results.append(False)
+              return results
+
+          video_results = probe_ranges("video", video, OFFSETS)
+          audio_offsets = [0, 4 * 1024 * 1024]
+          audio_results = probe_ranges("audio", audio, audio_offsets)
+
+          video_nonzero_ok = len(video_results) >= 2 and all(video_results)
+          audio_nonzero_ok = len(audio_results) >= 2 and all(audio_results)
+
+          print(f"video_all_ranges_ok={str(video_nonzero_ok).lower()}", flush=True)
+          print(f"audio_all_ranges_ok={str(audio_nonzero_ok).lower()}", flush=True)
+
+          if video_nonzero_ok and audio_nonzero_ok:
+              print("RESULT=PASS_GITHUB_DIRECT_NONZERO_RANGES", flush=True)
+              sys.exit(0)
+
+          print("RESULT=FAIL_GITHUB_DIRECT_NONZERO_RANGES", flush=True)
+          sys.exit(7)
+          PY

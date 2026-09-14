@@ -1,0 +1,71 @@
+name: Test Browser Run MP4 chunk transfer
+
+on:
+  push:
+    branches:
+      - experimental-cloudflare-free-browser
+    paths:
+      - ".github/workflows/test-browser-chunk-transfer.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Fetch one 64 KiB format 18 MP4 chunk
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch and verify 64 KiB from progressive format 18
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import urllib.error
+          import urllib.request
+
+          url = (
+              "https://youtube-free-browser-probe.temesotejam-t265.workers.dev/"
+              "chunk/video?v=2NJdNKJ9LPM&start=4194304&length=65536"
+          )
+          request = urllib.request.Request(
+              url,
+              headers={"User-Agent": "youtube-video-fetcher-format18-64k-test/0.1"},
+          )
+
+          try:
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  status = response.status
+                  headers = response.headers
+                  data = response.read()
+          except urllib.error.HTTPError as exc:
+              body = exc.read().decode("utf-8", errors="replace")
+              print(f"worker_http_status={exc.code}")
+              print(f"worker_error_body={body[:4096]}")
+              raise SystemExit(1)
+
+          print(f"worker_http_status={status}")
+          print(f"upstream_status={headers.get('X-Upstream-Status')}")
+          print(f"upstream_content_range={headers.get('X-Upstream-Content-Range')}")
+          print(f"capture_method={headers.get('X-Capture-Method')}")
+          print(f"source_itag={headers.get('X-Source-Itag')}")
+          print(f"has_audio={headers.get('X-Has-Audio')}")
+          print(f"source_total={headers.get('X-Source-Total-Bytes')}")
+          print(f"received_bytes={len(data)}")
+          print(f"sha256={hashlib.sha256(data).hexdigest()}")
+
+          checks = [
+              status == 200,
+              headers.get("X-Upstream-Status") == "206",
+              headers.get("X-Capture-Method") == "format18-same-origin-range",
+              headers.get("X-Source-Itag") == "18",
+              headers.get("X-Has-Audio") == "true",
+              len(data) == 65536,
+              bool(data),
+              not all(value == 0 for value in data),
+          ]
+          if not all(checks):
+              raise SystemExit("64 KiB format 18 verification failed")
+
+          print("RESULT=PASS_REAL_64K_FORMAT18_MP4_TRANSFER")
+          PY

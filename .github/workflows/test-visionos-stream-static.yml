@@ -1,0 +1,150 @@
+name: Test full VISIONOS media fetch
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install FFmpeg
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+
+      - name: Install Browser Run dependency
+        working-directory: cloudflare-free-probe
+        run: npm install --no-audit --no-fund
+
+      - name: Check full-stream Worker syntax
+        working-directory: cloudflare-free-probe
+        run: node --check src/browser-mp4-visionos-segmented-stream-probe.js
+
+      - name: Deploy static full-stream Worker
+        id: deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare-free-probe
+          command: deploy --config wrangler-visionos-stream-probe.jsonc
+
+      - name: Fetch full video-only MP4
+        env:
+          BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          set -euo pipefail
+          sleep 5
+          mkdir -p output
+          set +e
+          CODE=$(curl -sS --max-time 300 -D output/video.headers.txt -o output/video-only.mp4 -w "%{http_code}" "${BASE_URL%/}/stream/video")
+          CURL_RC=$?
+          set -e
+          echo "curl_rc=$CURL_RC"
+          echo "http_code=$CODE"
+          if [ "$CURL_RC" -ne 0 ] || [ "$CODE" != "200" ]; then
+            echo "--- response body (first 1200 bytes) ---"
+            python3 - <<'PY'
+          from pathlib import Path
+          p = Path('output/video-only.mp4')
+          if p.exists():
+              print(p.read_bytes()[:1200].decode('utf-8', errors='replace'))
+          PY
+            exit 1
+          fi
+          VIDEO_EXPECTED=$(grep -i '^x-source-total-bytes:' output/video.headers.txt | tail -1 | awk '{print $2}' | tr -d '\r')
+          VIDEO_ACTUAL=$(stat -c%s output/video-only.mp4)
+          echo "video_expected=$VIDEO_EXPECTED"
+          echo "video_actual=$VIDEO_ACTUAL"
+          test "$VIDEO_ACTUAL" -eq "$VIDEO_EXPECTED"
+          grep -qi '^content-type: video/mp4' output/video.headers.txt
+          grep -qi '^x-upstream-status: 206' output/video.headers.txt
+          grep -qi '^x-source-itag: 298' output/video.headers.txt
+          grep -qi '^x-capture-method: visionos-cdp-full-segmented-stream' output/video.headers.txt
+          sha256sum output/video-only.mp4
+
+      - name: Upload video checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-visionos-fixed-test-video
+          retention-days: 1
+          path: |
+            output/video-only.mp4
+            output/video.headers.txt
+
+      - name: Respect Browser Run session interval
+        run: sleep 20
+
+      - name: Fetch full audio-only MP4
+        env:
+          BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          set -euo pipefail
+          set +e
+          CODE=$(curl -sS --max-time 180 -D output/audio.headers.txt -o output/audio-only.m4a -w "%{http_code}" "${BASE_URL%/}/stream/audio")
+          CURL_RC=$?
+          set -e
+          echo "curl_rc=$CURL_RC"
+          echo "http_code=$CODE"
+          if [ "$CURL_RC" -ne 0 ] || [ "$CODE" != "200" ]; then
+            echo "--- response body (first 1200 bytes) ---"
+            python3 - <<'PY'
+          from pathlib import Path
+          p = Path('output/audio-only.m4a')
+          if p.exists():
+              print(p.read_bytes()[:1200].decode('utf-8', errors='replace'))
+          PY
+            exit 1
+          fi
+          AUDIO_EXPECTED=$(grep -i '^x-source-total-bytes:' output/audio.headers.txt | tail -1 | awk '{print $2}' | tr -d '\r')
+          AUDIO_ACTUAL=$(stat -c%s output/audio-only.m4a)
+          echo "audio_expected=$AUDIO_EXPECTED"
+          echo "audio_actual=$AUDIO_ACTUAL"
+          test "$AUDIO_ACTUAL" -eq "$AUDIO_EXPECTED"
+          grep -qi '^content-type: audio/mp4' output/audio.headers.txt
+          grep -qi '^x-upstream-status: 206' output/audio.headers.txt
+          grep -qi '^x-source-itag: 140' output/audio.headers.txt
+          grep -qi '^x-capture-method: visionos-cdp-full-segmented-stream' output/audio.headers.txt
+          grep -i -E '^(x-source-itag|x-source-total-bytes|x-segment-count|x-url-refresh-segments):' output/audio.headers.txt || true
+          sha256sum output/audio-only.m4a
+
+      - name: Upload audio checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-visionos-fixed-test-audio
+          retention-days: 1
+          path: |
+            output/audio-only.m4a
+            output/audio.headers.txt
+
+      - name: Remux video and audio
+        run: |
+          set -euo pipefail
+          ffmpeg -y -loglevel warning \
+            -i output/video-only.mp4 \
+            -i output/audio-only.m4a \
+            -map 0:v:0 -map 1:a:0 \
+            -c copy output/video.mp4
+          ffprobe -v error \
+            -show_entries format=duration,size \
+            -show_entries stream=index,codec_type,codec_name \
+            -of json output/video.mp4 | tee output/ffprobe.json
+          sha256sum output/video.mp4
+
+      - name: Upload fixed-test MP4 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-visionos-fixed-test
+          retention-days: 1
+          path: |
+            output/video.mp4
+            output/ffprobe.json

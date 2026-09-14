@@ -1,0 +1,49 @@
+name: Restore original Browser Run worker
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Browser Run dependency
+        working-directory: cloudflare-free-probe
+        run: npm install --no-audit --no-fund
+
+      - name: Check stored Worker syntax
+        working-directory: cloudflare-free-probe
+        run: node --check src/browser-mp4-cdp-stream.js
+
+      - name: Deploy stored Worker unchanged
+        id: deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare-free-probe
+          command: deploy --config wrangler-mp4-probe.jsonc
+
+      - name: Verify deployed service metadata
+        env:
+          BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          set -euo pipefail
+          sleep 5
+          curl -fsS "${BASE_URL%/}/" > service.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('service.json').read_text())
+          print('service=', data.get('service'))
+          print('browser_run_used=', data.get('browser_run_used'))
+          print('paid_cloudflare_feature_used=', data.get('paid_cloudflare_feature_used'))
+          if data.get('service') != 'youtube-free-browser-cdp-stream-probe':
+              raise SystemExit('unexpected deployed service')
+          PY

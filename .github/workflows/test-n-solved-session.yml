@@ -1,0 +1,208 @@
+name: Test solved-n persistent Browser session
+
+on:
+  push:
+    branches:
+      - experimental-cloudflare-free-browser
+    paths:
+      - ".github/workflows/test-n-solved-session.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Solve n with official EJS and fetch 4 MiB
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PROBE_BASE_URL: https://youtube-free-browser-probe.temesotejam-t265.workers.dev
+      EJS_COMMIT: 6f8587bb7009a1fc81038538071d2cb66b8b8ed0
+
+    steps:
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Prepare persistent Browser Run session
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          base = os.environ['PROBE_BASE_URL']
+          url = f'{base}/session/prepare?v=2NJdNKJ9LPM'
+          request = urllib.request.Request(
+              url,
+              headers={'User-Agent': 'youtube-video-fetcher-n-solve-test/0.1'},
+          )
+          with urllib.request.urlopen(request, timeout=60) as response:
+              payload = json.loads(response.read().decode('utf-8'))
+
+          required = ['session_id', 'n_challenge', 'player_js_url']
+          missing = [key for key in required if not payload.get(key)]
+          if missing:
+              raise SystemExit(f'prepare response missing: {missing}; result={payload.get("result")}')
+
+          session_id = payload['session_id']
+          challenge = payload['n_challenge']
+          player_js_url = payload['player_js_url']
+
+          print(f'::add-mask::{session_id}')
+          print(f'::add-mask::{challenge}')
+          print(f'prepare_result={payload.get("result")}')
+          print(f'page_http_status={payload.get("page_http_status")}')
+          print(f'player_http_status={payload.get("player_http_status")}')
+          print(f'playability_status={payload.get("playability_status")}')
+          print(f'source_itag={payload.get("source_itag")}')
+          print(f'source_height={payload.get("source_height")}')
+          print(f'source_total_bytes={payload.get("source_total_bytes")}')
+          print(f'n_challenge_length={len(challenge)}')
+          print(f'player_js_url_present={bool(player_js_url)}')
+
+          Path('/tmp/yvf-session-id').write_text(session_id, encoding='utf-8')
+          Path('/tmp/yvf-n-challenge').write_text(challenge, encoding='utf-8')
+          Path('/tmp/yvf-player-js-url').write_text(player_js_url, encoding='utf-8')
+          PY
+
+      - name: Fetch player JavaScript and official yt-dlp EJS
+        run: |
+          set -euo pipefail
+          PLAYER_JS_URL="$(cat /tmp/yvf-player-js-url)"
+          curl -fsSL --retry 3 --retry-delay 1 --max-time 45 \
+            -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152.0.0.0 Safari/537.36' \
+            "$PLAYER_JS_URL" -o /tmp/yvf-player.js
+          test -s /tmp/yvf-player.js
+          echo "player_js_bytes=$(stat -c%s /tmp/yvf-player.js)"
+
+          rm -rf /tmp/yt-dlp-ejs
+          git init -q /tmp/yt-dlp-ejs
+          git -C /tmp/yt-dlp-ejs remote add origin https://github.com/yt-dlp/ejs.git
+          git -C /tmp/yt-dlp-ejs fetch -q --depth=1 origin "$EJS_COMMIT"
+          git -C /tmp/yt-dlp-ejs checkout -q --detach FETCH_HEAD
+          cd /tmp/yt-dlp-ejs
+          npm ci --no-audit --no-fund
+          echo "ejs_commit=$(git rev-parse HEAD)"
+          echo "node_version=$(node --version)"
+
+      - name: Solve n challenge with official EJS
+        run: |
+          set -euo pipefail
+          N_CHALLENGE="$(cat /tmp/yvf-n-challenge)"
+          cd /tmp/yt-dlp-ejs
+          NODE_NO_WARNINGS=1 node run.ts /tmp/yvf-player.js "n:${N_CHALLENGE}" > /tmp/yvf-ejs-result.json
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          challenge = Path('/tmp/yvf-n-challenge').read_text(encoding='utf-8')
+          result = json.loads(Path('/tmp/yvf-ejs-result.json').read_text(encoding='utf-8'))
+          if result.get('type') != 'result':
+              raise SystemExit(f'EJS top-level failure: {result.get("error")}')
+          responses = result.get('responses') or []
+          if not responses or responses[0].get('type') != 'result':
+              error = responses[0].get('error') if responses else 'missing n response'
+              raise SystemExit(f'EJS n solve failed: {error}')
+          solved = (responses[0].get('data') or {}).get(challenge)
+          if not solved:
+              raise SystemExit('EJS did not return a solved n value')
+
+          print(f'::add-mask::{solved}')
+          print(f'solved_n_length={len(solved)}')
+          print(f'n_changed={solved != challenge}')
+          Path('/tmp/yvf-solved-n').write_text(solved, encoding='utf-8')
+          PY
+
+      - name: Fetch real 4 MiB with solved n in the same Browser session
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          session_id = Path('/tmp/yvf-session-id').read_text(encoding='utf-8')
+          solved_n = Path('/tmp/yvf-solved-n').read_text(encoding='utf-8')
+          query = urllib.parse.urlencode({
+              'session': session_id,
+              'n': solved_n,
+              'start': 4194304,
+              'length': 4194304,
+              'v': '2NJdNKJ9LPM',
+          })
+          url = f"{os.environ['PROBE_BASE_URL']}/session/chunk?{query}"
+          request = urllib.request.Request(
+              url,
+              headers={'User-Agent': 'youtube-video-fetcher-n-solve-test/0.1'},
+          )
+
+          try:
+              with urllib.request.urlopen(request, timeout=90) as response:
+                  status = response.status
+                  headers = response.headers
+                  data = response.read()
+          except urllib.error.HTTPError as exc:
+              body = exc.read().decode('utf-8', errors='replace')
+              print(f'worker_http_status={exc.code}')
+              print(f'worker_error_body={body[:4096]}')
+              raise SystemExit(1)
+
+          print(f'worker_http_status={status}')
+          print(f'upstream_status={headers.get("X-Upstream-Status")}')
+          print(f'upstream_content_range={headers.get("X-Upstream-Content-Range")}')
+          print(f'n_solved={headers.get("X-N-Solved")}')
+          print(f'capture_method={headers.get("X-Capture-Method")}')
+          print(f'source_itag={headers.get("X-Source-Itag")}')
+          print(f'source_total={headers.get("X-Source-Total-Bytes")}')
+          print(f'received_bytes={len(data)}')
+          print(f'sha256={hashlib.sha256(data).hexdigest()}')
+          print(f'first16={data[:16].hex()}')
+          print(f'last16={data[-16:].hex()}')
+
+          checks = [
+              status == 200,
+              headers.get('X-Upstream-Status') == '206',
+              headers.get('X-N-Solved') == 'true',
+              headers.get('X-Capture-Method') == 'persistent-session-solved-n',
+              headers.get('X-Source-Itag') == '298',
+              headers.get('X-Source-Total-Bytes') == '80955133',
+              len(data) == 4194304,
+              bool(data),
+              not all(value == 0 for value in data),
+          ]
+          if not all(checks):
+              raise SystemExit('solved-n 4 MiB verification failed')
+
+          print('RESULT=PASS_SOLVED_N_PERSISTENT_SESSION_4MIB')
+          PY
+
+      - name: Close persistent Browser session
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          path = Path('/tmp/yvf-session-id')
+          if not path.exists():
+              print('No Browser session was created; nothing to close.')
+              raise SystemExit(0)
+
+          session_id = path.read_text(encoding='utf-8')
+          query = urllib.parse.urlencode({'session': session_id, 'v': '2NJdNKJ9LPM'})
+          url = f"{os.environ['PROBE_BASE_URL']}/session/close?{query}"
+          try:
+              with urllib.request.urlopen(url, timeout=30) as response:
+                  print(f'close_http_status={response.status}')
+          except Exception as exc:
+              print(f'Browser session cleanup warning: {type(exc).__name__}')
+          PY
