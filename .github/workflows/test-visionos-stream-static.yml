@@ -20,6 +20,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install FFmpeg
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+
       - name: Install Browser Run dependency
         working-directory: cloudflare-free-probe
         run: npm install --no-audit --no-fund
@@ -80,11 +88,20 @@ jobs:
           grep -i -E '^(x-source-itag|x-source-total-bytes|x-segment-count):' output/audio.headers.txt || true
           sha256sum output/audio-only.m4a
 
+      - name: Upload raw-media checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-visionos-fixed-test-raw
+          retention-days: 1
+          path: |
+            output/video-only.mp4
+            output/audio-only.m4a
+            output/video.headers.txt
+            output/audio.headers.txt
+
       - name: Remux video and audio
         run: |
           set -euo pipefail
-          command -v ffmpeg
-          command -v ffprobe
           ffmpeg -y -loglevel warning \
             -i output/video-only.mp4 \
             -i output/audio-only.m4a \
