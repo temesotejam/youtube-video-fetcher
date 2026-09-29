@@ -120,6 +120,8 @@ jobs:
           print("Waiting 20 seconds after metadata Browser Run session...", flush=True)
           time.sleep(20)
           fetch_kind("video","mp4")
+          print("Waiting 20 seconds before switching from video to audio...", flush=True)
+          time.sleep(20)
           fetch_kind("audio","m4a")
           PY
 
