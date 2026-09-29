@@ -26,6 +26,11 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional YouTube player client override, e.g. mweb. Empty keeps yt-dlp defaults.",
     )
+    parser.add_argument(
+        "--player-skip",
+        default="",
+        help="Optional comma-separated YouTube player requests to skip, e.g. webpage,configs.",
+    )
     return parser.parse_args()
 
 
@@ -62,11 +67,16 @@ def main() -> int:
         str(output_dir / "video.%(ext)s"),
     ]
 
+    extractor_parts = []
     if args.player_client:
+        extractor_parts.append(f"player_client={args.player_client}")
+    if args.player_skip:
+        extractor_parts.append(f"player_skip={args.player_skip}")
+    if extractor_parts:
         command.extend(
             [
                 "--extractor-args",
-                f"youtube:player_client={args.player_client}",
+                "youtube:" + ";".join(extractor_parts),
             ]
         )
 
@@ -85,6 +95,7 @@ def main() -> int:
     print("Running yt-dlp...")
     print("Requested section:", f"{args.start} - {args.end}" if args.start else "full video")
     print("Player client:", args.player_client or "yt-dlp default")
+    print("Player skip:", args.player_skip or "none")
 
     with log_path.open("w", encoding="utf-8") as log_file:
         process = subprocess.Popen(
@@ -111,6 +122,7 @@ def main() -> int:
         "requested_start": args.start or None,
         "requested_end": args.end or None,
         "player_client": args.player_client or None,
+        "player_skip": args.player_skip or None,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "yt_dlp_exit_code": return_code,
         "files": files,
