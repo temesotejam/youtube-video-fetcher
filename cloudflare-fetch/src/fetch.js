@@ -272,10 +272,10 @@ async function poll(sha) {
   try {
     const s = await api("/api/status?sha=" + encodeURIComponent(sha));
     let text = s.found
-      ? "status: " + s.status + (s.conclusion ? "\nconclusion: " + s.conclusion : "")
+      ? "status: " + s.status + (s.conclusion ? "\\nconclusion: " + s.conclusion : "")
       : "GitHub Actionsの起動待ち";
-    if (s.run_url) text += "\n" + s.run_url;
-    if (s.artifacts_url) text += "\nArtifact: " + s.artifacts_url;
+    if (s.run_url) text += "\\n" + s.run_url;
+    if (s.artifacts_url) text += "\\nArtifact: " + s.artifacts_url;
     $("status").textContent = text;
     if (!s.found || s.status !== "completed") timer = setTimeout(() => poll(sha), 5000);
   } catch (e) {
@@ -296,8 +296,8 @@ $("submit").addEventListener("click", async () => {
       }),
     });
     $("status").textContent =
-      "受理しました\nrequest_id: " + r.request_id +
-      "\ncommit: " + (r.commit_sha || "unknown");
+      "受理しました\\nrequest_id: " + r.request_id +
+      "\\ncommit: " + (r.commit_sha || "unknown");
     if (r.commit_sha) poll(r.commit_sha);
   } catch (e) {
     $("status").textContent = "エラー: " + e.message;
