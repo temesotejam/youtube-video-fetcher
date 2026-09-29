@@ -106,6 +106,55 @@ X64
 6. 必要なら `start_time` と `end_time` を指定します。
 7. 実行後、`youtube-video-*` Artifactを利用します。
 
+## Version 0.3 / Cloudflare Browser RunによるPC不要経路
+
+2026-09-29に、Cloudflare Browser Runを使った取得経路で、**ローカルPC・self-hosted runner・YouTube Cookieなし**のフル動画取得を確認しました。
+
+実測テストでは次まで成功しています。
+
+- video-only: 80,955,133 bytes
+- audio-only: 17,927,026 bytes
+- H.264 + AACへremuxした最終MP4: 99,593,135 bytes
+- duration: 1107.661497 s
+- GitHub Actions Artifactへの保存成功
+
+Cloudflare Browser Runの新規ブラウザ開始レート制限を避けるため、取得は最大16 MiBの範囲に分割し、Browserセッション間に20秒の間隔を設けます。各16 MiBは同一Browserセッション内で4 MiB単位にストリーミングします。
+
+通常のPC不要運用では `cloudflare_request.json` を更新します。
+
+```json
+{
+  "request_id": "2026-09-29T09-00-00Z-example",
+  "youtube_url": "https://youtu.be/...",
+  "question": "この動画の設計変更を説明して",
+  "note": "Cloudflare Browser Run fetch"
+}
+```
+
+main上の `.github/workflows/fetch-youtube-cloudflare.yml` が自動起動し、
+
+```text
+ChatGPT
+  -> cloudflare_request.json
+  -> GitHub-hosted runner
+  -> Cloudflare Browser Run
+  -> YouTube
+  -> 16 MiB bounded ranges
+  -> GitHubでvideo/audioを結合
+  -> video.mp4
+  -> GitHub Actions Artifact
+  -> ChatGPT
+```
+
+の順に処理します。
+
+必要なGitHub Actions Secretsは既存の以下2つです。
+
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+
+既存のWindows self-hosted runner経路はフォールバックとして残しています。
+
 ## Version 0.2 / PC不要のクラウド取得経路
 
 GitHub-hosted Ubuntu runnerで動画を取得する `.github/workflows/fetch-video-cloud.yml` を追加しています。通常はユーザーPCを起動しておく必要はありません。
