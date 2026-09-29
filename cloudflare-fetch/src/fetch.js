@@ -370,6 +370,42 @@ function decodeIoData(read) {
   return new TextEncoder().encode(read.data);
 }
 
+async function acquireBrowser(env) {
+  try {
+    const sessions = await puppeteer.sessions(env.BROWSER);
+    const available = Array.isArray(sessions)
+      ? sessions.find((session) => session?.sessionId && !session?.connectionId)
+      : null;
+
+    if (available?.sessionId) {
+      try {
+        const browser = await puppeteer.connect(env.BROWSER, available.sessionId);
+        return { browser, reused: true };
+      } catch {
+        // Fall through to a fresh launch if the free session was taken meanwhile.
+      }
+    }
+  } catch {
+    // Session enumeration is best-effort; fresh launch remains the fallback.
+  }
+
+  const browser = await puppeteer.launch(env.BROWSER, { keep_alive: 600000 });
+  return { browser, reused: false };
+}
+
+async function releaseBrowser(browser, reused) {
+  if (!browser) return;
+  if (reused && typeof browser.disconnect === "function") {
+    await browser.disconnect().catch(() => {});
+    return;
+  }
+  if (typeof browser.disconnect === "function") {
+    await browser.disconnect().catch(() => {});
+    return;
+  }
+  await releaseBrowser(browser, reused);
+}
+
 async function resolveFormats(browser, videoId = TEST_VIDEO_ID) {
   const page = await browser.newPage();
   try {
@@ -598,12 +634,12 @@ async function prepareSegment(browser, format, start, length) {
 }
 
 async function streamFullFormat(env, kind) {
-  const browser = await puppeteer.launch(env.BROWSER);
+  const { browser, reused } = await acquireBrowser(env);
   let closed = false;
   const closeBrowser = async () => {
     if (closed) return;
     closed = true;
-    await browser.close().catch(() => {});
+    await releaseBrowser(browser, reused);
   };
 
   try {
@@ -761,12 +797,12 @@ async function streamBoundedRange(env, videoId, kind, start, length) {
     throw new Error(`length must be between 1 and ${maxLength}`);
   }
 
-  const browser = await puppeteer.launch(env.BROWSER);
+  const { browser, reused } = await acquireBrowser(env);
   let closed = false;
   const closeBrowser = async () => {
     if (closed) return;
     closed = true;
-    await browser.close().catch(() => {});
+    await releaseBrowser(browser, reused);
   };
 
   try {
@@ -889,7 +925,7 @@ async function metadata(env, videoId) {
   if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) {
     throw new Error("Invalid YouTube video ID");
   }
-  const browser = await puppeteer.launch(env.BROWSER);
+  const { browser, reused } = await acquireBrowser(env);
   try {
     const player = await resolveFormats(browser, videoId);
     if (player.playability_status !== "OK") {
@@ -917,12 +953,12 @@ async function metadata(env, videoId) {
         : null,
     });
   } finally {
-    await browser.close().catch(() => {});
+    await releaseBrowser(browser, reused);
   }
 }
 
 async function streamProbe(env, kind) {
-  const browser = await puppeteer.launch(env.BROWSER);
+  const { browser, reused } = await acquireBrowser(env);
   try {
     const player = await resolveFormats(browser);
     const format = chooseFormat(player, kind);
@@ -983,7 +1019,7 @@ async function streamProbe(env, kind) {
       },
     });
   } finally {
-    await browser.close().catch(() => {});
+    await releaseBrowser(browser, reused);
   }
 }
 
