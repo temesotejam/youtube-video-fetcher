@@ -1,0 +1,8 @@
+{
+  "request_id": "2026-09-29T07-48-00Z-cloudtest",
+  "youtube_url": "https://youtu.be/udrtKw3Fljk",
+  "start_time": "00:00:00",
+  "end_time": "00:00:15",
+  "question": "Cloud-runner transport smoke test. Confirm that the GitHub-hosted runner can fetch actual video media without using the user's PC.",
+  "note": "v0.2 GitHub-hosted runner smoke test"
+}
