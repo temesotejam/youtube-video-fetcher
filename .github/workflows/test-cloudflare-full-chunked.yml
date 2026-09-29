@@ -1,0 +1,139 @@
+name: Test full chunked Cloudflare fetch
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experimental-cloudflare-free-browser
+    paths:
+      - ".github/workflows/test-cloudflare-full-chunked.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          cd cloudflare-free-probe
+          npm install --no-audit --no-fund
+          node --check src/browser-mp4-visionos-segmented-stream-probe.js
+
+      - name: Deploy range relay Worker
+        id: deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare-free-probe
+          command: deploy --config wrangler-visionos-stream-probe.jsonc
+
+      - name: Fetch metadata
+        env:
+          BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          set -euo pipefail
+          sleep 3
+          mkdir -p output
+          curl -fsS --max-time 60 "${BASE_URL%/}/meta?video_id=2NJdNKJ9LPM" -o output/meta.json
+          cat output/meta.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path("output/meta.json").read_text())
+          assert d["video"] and d["audio"], d
+          assert int(d["video"]["contentLength"]) > 0
+          assert int(d["audio"]["contentLength"]) > 0
+          print("video_bytes", d["video"]["contentLength"])
+          print("audio_bytes", d["audio"]["contentLength"])
+          PY
+
+      - name: Fetch full video and audio in bounded ranges
+        env:
+          BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import urllib.parse
+          from pathlib import Path
+
+          base=os.environ["BASE_URL"].rstrip("/")
+          video_id="2NJdNKJ9LPM"
+          chunk=16*1024*1024
+          meta=json.loads(Path("output/meta.json").read_text())
+
+          def fetch_kind(kind, suffix):
+              total=int(meta[kind]["contentLength"])
+              final=Path(f"output/{kind}-only.{suffix}")
+              final.write_bytes(b"")
+              start=0
+              index=0
+              while start < total:
+                  length=min(chunk, total-start)
+                  part=Path(f"output/{kind}-{index:03d}.part")
+                  q=urllib.parse.urlencode({
+                      "video_id": video_id,
+                      "kind": kind,
+                      "start": start,
+                      "length": length,
+                  })
+                  url=f"{base}/range?{q}"
+                  print(f"fetch {kind} chunk={index} start={start} length={length}", flush=True)
+                  p=subprocess.run(
+                      ["curl","-fsS","--retry","2","--retry-delay","2","--max-time","120",url,"-o",str(part)],
+                      text=True,
+                  )
+                  if p.returncode != 0:
+                      raise SystemExit(f"curl failed for {kind} chunk {index}: {p.returncode}")
+                  got=part.stat().st_size
+                  if got != length:
+                      raise SystemExit(f"size mismatch for {kind} chunk {index}: expected {length}, got {got}")
+                  with final.open("ab") as out, part.open("rb") as src:
+                      while True:
+                          buf=src.read(1024*1024)
+                          if not buf:
+                              break
+                          out.write(buf)
+                  part.unlink()
+                  start += length
+                  index += 1
+              actual=final.stat().st_size
+              if actual != total:
+                  raise SystemExit(f"final {kind} size mismatch: expected {total}, got {actual}")
+              print(f"{kind} complete bytes={actual} chunks={index}", flush=True)
+
+          fetch_kind("video","mp4")
+          fetch_kind("audio","m4a")
+          PY
+
+      - name: Remux and verify
+        run: |
+          set -euo pipefail
+          ffmpeg -y -loglevel warning             -i output/video-only.mp4             -i output/audio-only.m4a             -map 0:v:0 -map 1:a:0             -c copy output/video.mp4
+          ffprobe -v error             -show_entries format=duration,size             -show_entries stream=index,codec_type,codec_name             -of json output/video.mp4 | tee output/ffprobe.json
+          test -s output/video.mp4
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-cloudflare-full-chunked
+          retention-days: 1
+          compression-level: 0
+          path: |
+            output/meta.json
+            output/video-only.mp4
+            output/audio-only.m4a
+            output/video.mp4
+            output/ffprobe.json
