@@ -1,6 +1,315 @@
 import puppeteer from "@cloudflare/puppeteer";
 
 const TEST_VIDEO_ID = "2NJdNKJ9LPM";
+
+const GITHUB_OWNER = "temesotejam";
+const GITHUB_REPO = "youtube-video-fetcher";
+const REQUEST_PATH = "cloudflare_request.json";
+const WORKFLOW_FILE = "fetch-youtube-cloudflare.yml";
+
+function html(body, status = 200) {
+  return new Response(body, {
+    status,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "no-referrer",
+      "Content-Security-Policy":
+        "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:;",
+    },
+  });
+}
+
+function unauthorized() {
+  return json({ ok: false, error: "unauthorized" }, 401);
+}
+
+function validApiKey(request, env) {
+  if (!env.FETCH_API_KEY) return false;
+  const supplied = request.headers.get("X-API-Key") || "";
+  return supplied.length > 0 && supplied === env.FETCH_API_KEY;
+}
+
+function encodeBase64Utf8(text) {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function parseYoutubeVideoId(input) {
+  const value = String(input || "").trim();
+  if (/^[A-Za-z0-9_-]{11}$/.test(value)) return value;
+
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+
+  const host = url.hostname.toLowerCase();
+  if (host === "youtu.be" || host === "www.youtu.be") {
+    const id = url.pathname.split("/").filter(Boolean)[0];
+    return /^[A-Za-z0-9_-]{11}$/.test(id || "") ? id : null;
+  }
+
+  if (host === "youtube.com" || host.endsWith(".youtube.com")) {
+    if (url.pathname === "/watch") {
+      const id = url.searchParams.get("v");
+      return /^[A-Za-z0-9_-]{11}$/.test(id || "") ? id : null;
+    }
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (parts.length >= 2 && ["shorts", "embed", "live"].includes(parts[0])) {
+      return /^[A-Za-z0-9_-]{11}$/.test(parts[1]) ? parts[1] : null;
+    }
+  }
+
+  return null;
+}
+
+async function githubRequest(env, path, init = {}) {
+  if (!env.GITHUB_FETCH_TOKEN) {
+    throw new Error("GITHUB_FETCH_TOKEN is not configured on the Worker");
+  }
+  const headers = new Headers(init.headers || {});
+  headers.set("Accept", "application/vnd.github+json");
+  headers.set("Authorization", `Bearer ${env.GITHUB_FETCH_TOKEN}`);
+  headers.set("X-GitHub-Api-Version", "2022-11-28");
+  headers.set("User-Agent", "youtube-cloudflare-browser-fetch");
+  return fetch(`https://api.github.com${path}`, { ...init, headers });
+}
+
+async function createFetchRequest(request, env) {
+  if (!validApiKey(request, env)) return unauthorized();
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: "invalid_json" }, 400);
+  }
+
+  const youtubeUrl = String(body?.youtube_url || "").trim();
+  const question = String(body?.question || "").trim().slice(0, 4000);
+  const videoId = parseYoutubeVideoId(youtubeUrl);
+  if (!videoId) {
+    return json({ ok: false, error: "invalid_youtube_url" }, 400);
+  }
+
+  const current = await githubRequest(
+    env,
+    `/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${REQUEST_PATH}?ref=main`,
+  );
+  if (!current.ok) {
+    return json(
+      { ok: false, error: "github_read_failed", status: current.status },
+      502,
+    );
+  }
+  const currentJson = await current.json();
+
+  const requestId =
+    new Date().toISOString().replace(/[:.]/g, "-") +
+    "-" +
+    crypto.randomUUID().slice(0, 8);
+
+  const payload = {
+    request_id: requestId,
+    youtube_url: youtubeUrl,
+    question,
+    note: "Triggered from Cloudflare web/API",
+  };
+
+  const update = await githubRequest(
+    env,
+    `/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${REQUEST_PATH}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: `Cloudflare fetch request ${requestId}`,
+        content: encodeBase64Utf8(JSON.stringify(payload, null, 2) + "\n"),
+        sha: currentJson.sha,
+        branch: "main",
+      }),
+    },
+  );
+
+  const updateJson = await update.json().catch(() => ({}));
+  if (!update.ok) {
+    return json(
+      {
+        ok: false,
+        error: "github_update_failed",
+        status: update.status,
+        details: updateJson?.message || null,
+      },
+      502,
+    );
+  }
+
+  const commitSha = updateJson?.commit?.sha || null;
+  return json({
+    ok: true,
+    request_id: requestId,
+    video_id: videoId,
+    commit_sha: commitSha,
+    status_endpoint: commitSha ? `/api/status?sha=${commitSha}` : null,
+    actions_url: `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/${WORKFLOW_FILE}`,
+  });
+}
+
+async function fetchStatus(request, env) {
+  if (!validApiKey(request, env)) return unauthorized();
+
+  const url = new URL(request.url);
+  const sha = String(url.searchParams.get("sha") || "").trim();
+  if (!/^[0-9a-f]{40}$/i.test(sha)) {
+    return json({ ok: false, error: "invalid_sha" }, 400);
+  }
+
+  const response = await githubRequest(
+    env,
+    `/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/${WORKFLOW_FILE}/runs?head_sha=${encodeURIComponent(sha)}&per_page=5`,
+  );
+  if (!response.ok) {
+    return json(
+      { ok: false, error: "github_status_failed", status: response.status },
+      502,
+    );
+  }
+
+  const data = await response.json();
+  const run = Array.isArray(data.workflow_runs) ? data.workflow_runs[0] : null;
+  if (!run) {
+    return json({
+      ok: true,
+      found: false,
+      status: "waiting_for_workflow",
+      commit_sha: sha,
+    });
+  }
+
+  const result = {
+    ok: true,
+    found: true,
+    run_id: run.id,
+    status: run.status,
+    conclusion: run.conclusion,
+    run_url: run.html_url,
+    created_at: run.created_at,
+    updated_at: run.updated_at,
+  };
+
+  if (run.status === "completed" && run.conclusion === "success") {
+    result.artifact_name = `youtube-cloudflare-${run.id}`;
+    result.artifacts_url =
+      `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/actions/runs/${run.id}#artifacts`;
+  }
+
+  return json(result);
+}
+
+function appPage() {
+  return html(`<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>YouTube Fetch Bridge</title>
+<style>
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+body { max-width: 760px; margin: 0 auto; padding: 32px 18px 60px; line-height: 1.55; }
+.card { border: 1px solid color-mix(in srgb, currentColor 18%, transparent); border-radius: 18px; padding: 22px; margin-top: 18px; }
+label { display:block; font-weight:700; margin:14px 0 6px; }
+input, textarea, button { width:100%; box-sizing:border-box; font:inherit; }
+input, textarea { padding:12px; border-radius:10px; border:1px solid color-mix(in srgb, currentColor 24%, transparent); }
+textarea { min-height:110px; resize:vertical; }
+button { margin-top:18px; padding:12px 16px; border:0; border-radius:10px; font-weight:700; cursor:pointer; }
+small { opacity:.72; }
+#status { white-space:pre-wrap; overflow-wrap:anywhere; }
+.ok { font-weight:700; }
+</style>
+</head>
+<body>
+<h1>YouTube Fetch Bridge</h1>
+<p>URLを送ると、Cloudflare Browser Run経由で取得ジョブをGitHub Actionsへ投入します。ローカルPCは不要です。</p>
+<div class="card">
+  <label for="key">Access key</label>
+  <input id="key" type="password" autocomplete="off" placeholder="API access key">
+  <small>この値はブラウザ内で送信に使うだけで、GitHubには保存されません。</small>
+
+  <label for="url">YouTube URL</label>
+  <input id="url" type="url" placeholder="https://youtu.be/..." autocomplete="off">
+
+  <label for="question">解析メモ / 質問（任意）</label>
+  <textarea id="question" placeholder="この動画の設計変更を確認して、など"></textarea>
+
+  <button id="submit">取得開始</button>
+</div>
+<div class="card">
+  <strong>Status</strong>
+  <div id="status">待機中</div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+let timer = null;
+
+async function api(path, options = {}) {
+  const headers = new Headers(options.headers || {});
+  headers.set("X-API-Key", $("key").value);
+  if (options.body) headers.set("Content-Type", "application/json");
+  const r = await fetch(path, { ...options, headers });
+  const data = await r.json().catch(() => ({ ok:false, error:"invalid_response" }));
+  if (!r.ok || data.ok === false) throw new Error(data.error || ("HTTP " + r.status));
+  return data;
+}
+
+async function poll(sha) {
+  clearTimeout(timer);
+  try {
+    const s = await api("/api/status?sha=" + encodeURIComponent(sha));
+    let text = s.found
+      ? "status: " + s.status + (s.conclusion ? "\nconclusion: " + s.conclusion : "")
+      : "GitHub Actionsの起動待ち";
+    if (s.run_url) text += "\n" + s.run_url;
+    if (s.artifacts_url) text += "\nArtifact: " + s.artifacts_url;
+    $("status").textContent = text;
+    if (!s.found || s.status !== "completed") timer = setTimeout(() => poll(sha), 5000);
+  } catch (e) {
+    $("status").textContent = "状態確認エラー: " + e.message;
+  }
+}
+
+$("submit").addEventListener("click", async () => {
+  clearTimeout(timer);
+  $("status").textContent = "リクエスト送信中…";
+  $("submit").disabled = true;
+  try {
+    const r = await api("/api/fetch", {
+      method: "POST",
+      body: JSON.stringify({
+        youtube_url: $("url").value,
+        question: $("question").value,
+      }),
+    });
+    $("status").textContent =
+      "受理しました\nrequest_id: " + r.request_id +
+      "\ncommit: " + (r.commit_sha || "unknown");
+    if (r.commit_sha) poll(r.commit_sha);
+  } catch (e) {
+    $("status").textContent = "エラー: " + e.message;
+  } finally {
+    $("submit").disabled = false;
+  }
+});
+</script>
+</body>
+</html>`);
+}
+
 const SEGMENT_LENGTH = 4 * 1024 * 1024;
 const READ_SIZE = 64 * 1024;
 const VIDEO_URL_REFRESH_SEGMENTS = 4;
@@ -666,6 +975,17 @@ async function streamProbe(env, kind) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    if (request.method === "GET" && url.pathname === "/") {
+      return appPage();
+    }
+    if (request.method === "POST" && url.pathname === "/api/fetch") {
+      return await createFetchRequest(request, env);
+    }
+    if (request.method === "GET" && url.pathname === "/api/status") {
+      return await fetchStatus(request, env);
+    }
+
     try {
       if (url.pathname === "/meta") {
         return await metadata(env, url.searchParams.get("video_id") || "");
