@@ -105,6 +105,16 @@ jobs:
           print(f"video_id={video_id}")
           PY
 
+      - name: Inspect Cloudflare Browser Run limits
+        shell: bash
+        env:
+          BASE_URL: https://youtube-cloudflare-browser-fetch.temesotejam-t265.workers.dev
+        run: |
+          set -euo pipefail
+          echo "Browser Run diagnostics:"
+          curl -sS --max-time 30 "${BASE_URL%/}/browser-diagnostics" | tee browser-diagnostics.json
+          echo
+
       - name: Fetch media metadata
         shell: bash
         env:
