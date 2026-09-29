@@ -426,7 +426,10 @@ async function streamBoundedRange(env, videoId, kind, start, length) {
   if (!["video", "audio"].includes(kind)) {
     throw new Error("kind must be video or audio");
   }
+
   const maxLength = 16 * 1024 * 1024;
+  const segmentLength = 4 * 1024 * 1024;
+
   if (!Number.isInteger(start) || start < 0) {
     throw new Error("start must be a non-negative integer");
   }
@@ -435,6 +438,13 @@ async function streamBoundedRange(env, videoId, kind, start, length) {
   }
 
   const browser = await puppeteer.launch(env.BROWSER);
+  let closed = false;
+  const closeBrowser = async () => {
+    if (closed) return;
+    closed = true;
+    await browser.close().catch(() => {});
+  };
+
   try {
     const player = await resolveFormats(browser, videoId);
     const format = chooseFormat(player, kind);
@@ -452,55 +462,102 @@ async function streamBoundedRange(env, videoId, kind, start, length) {
       throw new Error(`start ${start} is beyond source length ${sourceTotal}`);
     }
 
-    const actualLength = Math.min(length, sourceTotal - start);
-    const segment = await prepareSegment(browser, format, start, actualLength);
-    const chunks = [];
-    let total = 0;
-    try {
-      while (total < segment.expected) {
-        const remaining = segment.expected - total;
-        const read = await segment.cdp.send("IO.read", {
-          handle: segment.stream,
-          size: Math.min(READ_SIZE, Math.max(remaining, 1)),
-        });
-        const chunk = decodeIoData(read);
-        if (chunk.byteLength) {
-          chunks.push(chunk);
-          total += chunk.byteLength;
-        }
-        if (read.eof) break;
-      }
-    } finally {
+    const totalExpected = Math.min(length, sourceTotal - start);
+    const segmentCount = Math.ceil(totalExpected / segmentLength);
+    let segmentIndex = 0;
+    let current = null;
+    let totalSent = 0;
+
+    const cleanupCurrent = async () => {
+      if (!current) return;
+      const segment = current;
+      current = null;
       await segment.cleanup();
-    }
+    };
 
-    if (total !== actualLength) {
-      throw new Error(`Range size mismatch: expected ${actualLength}, got ${total}`);
-    }
+    const body = new ReadableStream({
+      async pull(controller) {
+        try {
+          if (!current) {
+            if (segmentIndex >= segmentCount) {
+              if (totalSent !== totalExpected) {
+                throw new Error(
+                  `Bounded stream size mismatch: expected ${totalExpected}, got ${totalSent}`,
+                );
+              }
+              controller.close();
+              await closeBrowser();
+              return;
+            }
 
-    const body = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-      body.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
+            const segmentStart = start + segmentIndex * segmentLength;
+            const remainingLogical = totalExpected - segmentIndex * segmentLength;
+            const thisLength = Math.min(segmentLength, remainingLogical);
+
+            current = await prepareSegment(
+              browser,
+              format,
+              segmentStart,
+              thisLength,
+            );
+          }
+
+          const remaining = current.expected - current.sent;
+          const read = await current.cdp.send("IO.read", {
+            handle: current.stream,
+            size: Math.min(READ_SIZE, Math.max(remaining, 1)),
+          });
+          const chunk = decodeIoData(read);
+
+          if (chunk.byteLength) {
+            if (current.sent + chunk.byteLength > current.expected) {
+              throw new Error("CDP segment exceeded requested range");
+            }
+            current.sent += chunk.byteLength;
+            totalSent += chunk.byteLength;
+            controller.enqueue(chunk);
+          }
+
+          if (read.eof) {
+            if (current.sent !== current.expected) {
+              throw new Error(
+                `Segment size mismatch: expected ${current.expected}, got ${current.sent}`,
+              );
+            }
+            await cleanupCurrent();
+            segmentIndex += 1;
+          }
+        } catch (error) {
+          controller.error(error);
+          await cleanupCurrent().catch(() => {});
+          await closeBrowser();
+        }
+      },
+      async cancel() {
+        await cleanupCurrent().catch(() => {});
+        await closeBrowser();
+      },
+    });
 
     const mime = String(format.mimeType || (kind === "audio" ? "audio/mp4" : "video/mp4"));
     return new Response(body, {
       status: 200,
       headers: {
         "Content-Type": mime.split(";")[0],
-        "Content-Length": String(total),
+        "Content-Length": String(totalExpected),
         "Cache-Control": "no-store",
         "X-Source-Itag": String(format.itag || ""),
         "X-Source-Total-Bytes": String(sourceTotal),
         "X-Range-Start": String(start),
-        "X-Range-Length": String(total),
-        "X-Capture-Method": "visionos-cdp-bounded-range",
+        "X-Range-Length": String(totalExpected),
+        "X-Segment-Count": String(segmentCount),
+        "X-Segment-Bytes": String(segmentLength),
+        "X-Capture-Method": "visionos-cdp-bounded-segmented-stream",
       },
     });
-  } finally {
-    await browser.close().catch(() => {});
+  } catch (error) {
+    await closeBrowser();
+    throw error;
   }
 }
 
