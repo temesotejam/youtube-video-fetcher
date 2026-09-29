@@ -121,7 +121,7 @@ jobs:
       - name: Fetch video
         shell: bash
         run: |
-          python scripts/fetch_video.py "$YOUTUBE_URL"             --start "$START_TIME"             --end "$END_TIME"             --player-client mweb             --output-dir output
+          python scripts/fetch_video.py "$YOUTUBE_URL"             --start "$START_TIME"             --end "$END_TIME"             --player-client web_embedded             --player-skip webpage,configs             --output-dir output
           cp analysis_request.json output/analysis_request.json
 
       - name: Probe fetched media
