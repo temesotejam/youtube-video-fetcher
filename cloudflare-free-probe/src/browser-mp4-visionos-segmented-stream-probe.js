@@ -46,7 +46,7 @@ function decodeIoData(read) {
   return new TextEncoder().encode(read.data);
 }
 
-async function resolveFormats(browser) {
+async function resolveFormats(browser, videoId = TEST_VIDEO_ID) {
   const page = await browser.newPage();
   try {
     await page.setRequestInterception(true);
@@ -58,7 +58,7 @@ async function resolveFormats(browser) {
       }
     });
 
-    await page.goto(`https://www.youtube.com/watch?v=${TEST_VIDEO_ID}`, {
+    await page.goto(`https://www.youtube.com/watch?v=${videoId}`, {
       waitUntil: "domcontentloaded",
       timeout: 20000,
     });
@@ -145,7 +145,7 @@ async function resolveFormats(browser) {
           audio,
         };
       },
-      { videoId: TEST_VIDEO_ID, clientDef: VISIONOS_CLIENT },
+      { videoId, clientDef: VISIONOS_CLIENT },
     );
   } finally {
     await page.close().catch(() => {});
@@ -402,6 +402,128 @@ async function streamFullFormat(env, kind) {
 }
 
 
+
+async function streamBoundedRange(env, videoId, kind, start, length) {
+  if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) {
+    throw new Error("Invalid YouTube video ID");
+  }
+  if (!["video", "audio"].includes(kind)) {
+    throw new Error("kind must be video or audio");
+  }
+  const maxLength = 16 * 1024 * 1024;
+  if (!Number.isInteger(start) || start < 0) {
+    throw new Error("start must be a non-negative integer");
+  }
+  if (!Number.isInteger(length) || length <= 0 || length > maxLength) {
+    throw new Error(`length must be between 1 and ${maxLength}`);
+  }
+
+  const browser = await puppeteer.launch(env.BROWSER);
+  try {
+    const player = await resolveFormats(browser, videoId);
+    const format = chooseFormat(player, kind);
+    if (player.playability_status !== "OK" || !format?.url) {
+      throw new Error(
+        `Player not OK for ${kind}: ${player.playability_status || "unknown"} ${player.playability_reason || player.error || ""}`,
+      );
+    }
+
+    const sourceTotal = Number(format.contentLength || 0);
+    if (!Number.isFinite(sourceTotal) || sourceTotal <= 0) {
+      throw new Error(`Missing contentLength for ${kind}`);
+    }
+    if (start >= sourceTotal) {
+      throw new Error(`start ${start} is beyond source length ${sourceTotal}`);
+    }
+
+    const actualLength = Math.min(length, sourceTotal - start);
+    const segment = await prepareSegment(browser, format, start, actualLength);
+    const chunks = [];
+    let total = 0;
+    try {
+      while (total < segment.expected) {
+        const remaining = segment.expected - total;
+        const read = await segment.cdp.send("IO.read", {
+          handle: segment.stream,
+          size: Math.min(READ_SIZE, Math.max(remaining, 1)),
+        });
+        const chunk = decodeIoData(read);
+        if (chunk.byteLength) {
+          chunks.push(chunk);
+          total += chunk.byteLength;
+        }
+        if (read.eof) break;
+      }
+    } finally {
+      await segment.cleanup();
+    }
+
+    if (total !== actualLength) {
+      throw new Error(`Range size mismatch: expected ${actualLength}, got ${total}`);
+    }
+
+    const body = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+
+    const mime = String(format.mimeType || (kind === "audio" ? "audio/mp4" : "video/mp4"));
+    return new Response(body, {
+      status: 200,
+      headers: {
+        "Content-Type": mime.split(";")[0],
+        "Content-Length": String(total),
+        "Cache-Control": "no-store",
+        "X-Source-Itag": String(format.itag || ""),
+        "X-Source-Total-Bytes": String(sourceTotal),
+        "X-Range-Start": String(start),
+        "X-Range-Length": String(total),
+        "X-Capture-Method": "visionos-cdp-bounded-range",
+      },
+    });
+  } finally {
+    await browser.close().catch(() => {});
+  }
+}
+
+async function metadata(env, videoId) {
+  if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) {
+    throw new Error("Invalid YouTube video ID");
+  }
+  const browser = await puppeteer.launch(env.BROWSER);
+  try {
+    const player = await resolveFormats(browser, videoId);
+    if (player.playability_status !== "OK") {
+      throw new Error(
+        `Player not OK: ${player.playability_status || "unknown"} ${player.playability_reason || player.error || ""}`,
+      );
+    }
+    return json({
+      video_id: videoId,
+      playability_status: player.playability_status,
+      video: player.video
+        ? {
+            itag: player.video.itag,
+            contentLength: player.video.contentLength,
+            mimeType: player.video.mimeType,
+            height: player.video.height,
+          }
+        : null,
+      audio: player.audio
+        ? {
+            itag: player.audio.itag,
+            contentLength: player.audio.contentLength,
+            mimeType: player.audio.mimeType,
+          }
+        : null,
+    });
+  } finally {
+    await browser.close().catch(() => {});
+  }
+}
+
 async function streamProbe(env, kind) {
   const browser = await puppeteer.launch(env.BROWSER);
   try {
@@ -472,13 +594,23 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     try {
+      if (url.pathname === "/meta") {
+        return await metadata(env, url.searchParams.get("video_id") || "");
+      }
+      if (url.pathname === "/range") {
+        const videoId = url.searchParams.get("video_id") || "";
+        const kind = url.searchParams.get("kind") || "video";
+        const start = Number(url.searchParams.get("start") || "0");
+        const length = Number(url.searchParams.get("length") || String(4 * 1024 * 1024));
+        return await streamBoundedRange(env, videoId, kind, start, length);
+      }
       if (url.pathname === "/probe/video") return await streamProbe(env, "video");
       if (url.pathname === "/probe/audio") return await streamProbe(env, "audio");
       if (url.pathname === "/stream/video") return await streamFullFormat(env, "video");
       if (url.pathname === "/stream/audio") return await streamFullFormat(env, "audio");
       return json({
         service: "youtube-free-browser-visionos-full-stream-probe",
-        endpoints: ["/probe/video", "/probe/audio", "/stream/video", "/stream/audio"],
+        endpoints: ["/meta", "/range", "/probe/video", "/probe/audio", "/stream/video", "/stream/audio"],
         fixed_test_video_id: TEST_VIDEO_ID,
         segment_length: SEGMENT_LENGTH,
         read_size: READ_SIZE,
