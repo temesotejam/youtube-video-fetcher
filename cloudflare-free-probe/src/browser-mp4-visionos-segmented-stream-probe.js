@@ -187,11 +187,27 @@ async function prepareSegment(browser, format, start, length) {
       ],
     });
 
-    cdp.on("Fetch.requestPaused", (event) => {
-      if (event.request?.url?.includes("googlevideo.com/videoplayback")) {
-        if (timeoutId) clearTimeout(timeoutId);
-        resolvePaused(event);
+    cdp.on("Fetch.requestPaused", async (event) => {
+      if (!event.request?.url?.includes("googlevideo.com/videoplayback")) {
+        return;
       }
+
+      const status = event.responseStatusCode ?? null;
+      if (status && status >= 300 && status < 400) {
+        // YouTube commonly redirects a media URL to another googlevideo host.
+        // Let the browser follow normal redirects and wait for the final 206.
+        await cdp
+          .send("Fetch.continueResponse", { requestId: event.requestId })
+          .catch(async () => {
+            await cdp
+              .send("Fetch.continueRequest", { requestId: event.requestId })
+              .catch(() => {});
+          });
+        return;
+      }
+
+      if (timeoutId) clearTimeout(timeoutId);
+      resolvePaused(event);
     });
 
     timeoutId = setTimeout(
