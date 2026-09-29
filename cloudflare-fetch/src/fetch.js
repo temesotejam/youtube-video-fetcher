@@ -246,6 +246,10 @@ small { opacity:.72; }
 <div class="card">
   <label for="key">Access key</label>
   <input id="key" type="password" autocomplete="off" placeholder="API access key">
+  <label style="font-weight:400; margin-top:8px;">
+    <input id="showKey" type="checkbox" style="width:auto; margin-right:8px;">
+    表示する
+  </label>
   <small>この値はブラウザ内で送信に使うだけで、GitHubには保存されません。</small>
 
   <label for="url">YouTube URL</label>
@@ -289,6 +293,10 @@ async function poll(sha) {
     $("status").textContent = "状態確認エラー: " + e.message;
   }
 }
+
+$("showKey").addEventListener("change", () => {
+  $("key").type = $("showKey").checked ? "text" : "password";
+});
 
 $("submit").addEventListener("click", async () => {
   clearTimeout(timer);
