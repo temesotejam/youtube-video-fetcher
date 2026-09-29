@@ -21,6 +21,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start", default="", help="Optional section start, e.g. 00:03:20")
     parser.add_argument("--end", default="", help="Optional section end, e.g. 00:03:40")
     parser.add_argument("--output-dir", default="output", help="Directory for generated files")
+    parser.add_argument(
+        "--player-client",
+        default="",
+        help="Optional YouTube player client override, e.g. mweb. Empty keeps yt-dlp defaults.",
+    )
     return parser.parse_args()
 
 
@@ -34,8 +39,6 @@ def main() -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Prefer H.264/AAC MP4 when available because it is broadly compatible,
-    # then fall back to a progressive MP4, and finally to yt-dlp's best choice.
     format_selector = (
         "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/"
         "b[ext=mp4]/"
@@ -49,9 +52,6 @@ def main() -> int:
         "--no-playlist",
         "--newline",
         "--write-info-json",
-        # Current YouTube extraction may require external JS challenge solving.
-        # Deno is provided by the GitHub Actions workflow and yt-dlp can obtain
-        # its matching EJS scripts from npm when this component is enabled.
         "--remote-components",
         "ejs:npm",
         "--merge-output-format",
@@ -61,6 +61,14 @@ def main() -> int:
         "-o",
         str(output_dir / "video.%(ext)s"),
     ]
+
+    if args.player_client:
+        command.extend(
+            [
+                "--extractor-args",
+                f"youtube:player_client={args.player_client}",
+            ]
+        )
 
     if args.start and args.end:
         command.extend(
@@ -76,6 +84,7 @@ def main() -> int:
     log_path = output_dir / "download.log"
     print("Running yt-dlp...")
     print("Requested section:", f"{args.start} - {args.end}" if args.start else "full video")
+    print("Player client:", args.player_client or "yt-dlp default")
 
     with log_path.open("w", encoding="utf-8") as log_file:
         process = subprocess.Popen(
@@ -101,6 +110,7 @@ def main() -> int:
         "source_url": args.url,
         "requested_start": args.start or None,
         "requested_end": args.end or None,
+        "player_client": args.player_client or None,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "yt_dlp_exit_code": return_code,
         "files": files,
