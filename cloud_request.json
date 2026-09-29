@@ -1,8 +1,8 @@
 {
-  "request_id": "2026-09-29T07-59-00Z-cloudtest-pot2",
+  "request_id": "2026-09-29T08-04-00Z-cloudtest-embedded",
   "youtube_url": "https://youtu.be/udrtKw3Fljk",
   "start_time": "00:00:00",
   "end_time": "00:00:15",
-  "question": "Cloud-runner transport smoke test with PO token provider after readiness-check fix.",
-  "note": "v0.2 GitHub-hosted runner smoke test retry 2"
+  "question": "Cloud-runner transport smoke test using web_embedded and skipping webpage/config requests.",
+  "note": "v0.2 GitHub-hosted runner smoke test retry 3"
 }
