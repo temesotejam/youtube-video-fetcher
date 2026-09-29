@@ -401,15 +401,84 @@ async function streamFullFormat(env, kind) {
   }
 }
 
+
+async function streamProbe(env, kind) {
+  const browser = await puppeteer.launch(env.BROWSER);
+  try {
+    const player = await resolveFormats(browser);
+    const format = chooseFormat(player, kind);
+    if (player.playability_status !== "OK" || !format?.url) {
+      throw new Error(
+        `Player not OK for ${kind}: ${player.playability_status || "unknown"} ${player.playability_reason || player.error || ""}`,
+      );
+    }
+
+    const sourceTotal = Number(format.contentLength || 0);
+    if (!Number.isFinite(sourceTotal) || sourceTotal <= 0) {
+      throw new Error(`Missing contentLength for ${kind}`);
+    }
+
+    const probeLength = Math.min(2 * 1024 * 1024, sourceTotal);
+    const segment = await prepareSegment(browser, format, 0, probeLength);
+    const chunks = [];
+    let total = 0;
+    try {
+      while (total < segment.expected) {
+        const remaining = segment.expected - total;
+        const read = await segment.cdp.send("IO.read", {
+          handle: segment.stream,
+          size: Math.min(READ_SIZE, Math.max(remaining, 1)),
+        });
+        const chunk = decodeIoData(read);
+        if (chunk.byteLength) {
+          chunks.push(chunk);
+          total += chunk.byteLength;
+        }
+        if (read.eof) break;
+      }
+    } finally {
+      await segment.cleanup();
+    }
+
+    if (total !== probeLength) {
+      throw new Error(`Probe size mismatch: expected ${probeLength}, got ${total}`);
+    }
+
+    const body = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+
+    const mime = String(format.mimeType || (kind === "audio" ? "audio/mp4" : "video/mp4"));
+    return new Response(body, {
+      status: 200,
+      headers: {
+        "Content-Type": mime.split(";")[0],
+        "Cache-Control": "no-store",
+        "X-Source-Itag": String(format.itag || ""),
+        "X-Source-Total-Bytes": String(sourceTotal),
+        "X-Probe-Bytes": String(total),
+        "X-Capture-Method": "visionos-cdp-2mb-probe",
+      },
+    });
+  } finally {
+    await browser.close().catch(() => {});
+  }
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     try {
+      if (url.pathname === "/probe/video") return await streamProbe(env, "video");
+      if (url.pathname === "/probe/audio") return await streamProbe(env, "audio");
       if (url.pathname === "/stream/video") return await streamFullFormat(env, "video");
       if (url.pathname === "/stream/audio") return await streamFullFormat(env, "audio");
       return json({
         service: "youtube-free-browser-visionos-full-stream-probe",
-        endpoints: ["/stream/video", "/stream/audio"],
+        endpoints: ["/probe/video", "/probe/audio", "/stream/video", "/stream/audio"],
         fixed_test_video_id: TEST_VIDEO_ID,
         segment_length: SEGMENT_LENGTH,
         read_size: READ_SIZE,
