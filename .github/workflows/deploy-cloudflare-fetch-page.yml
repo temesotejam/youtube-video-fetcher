@@ -1,0 +1,38 @@
+name: Deploy Cloudflare Fetch Page
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "cloudflare-fetch/**"
+      - ".github/workflows/deploy-cloudflare-fetch-page.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        working-directory: cloudflare-fetch
+        run: |
+          npm install --no-audit --no-fund
+          node --check src/fetch.js
+
+      - name: Deploy Worker
+        id: deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare-fetch
+          command: deploy --config wrangler.jsonc
+
+      - name: Show deployment URL
+        run: echo "${{ steps.deploy.outputs.deployment-url }}"
