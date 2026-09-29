@@ -1,0 +1,159 @@
+name: Cloud Fetch YouTube video
+
+on:
+  workflow_dispatch:
+    inputs:
+      youtube_url:
+        description: "YouTube video URL"
+        required: true
+        type: string
+      start_time:
+        description: "Optional start time (HH:MM:SS)"
+        required: false
+        default: ""
+        type: string
+      end_time:
+        description: "Optional end time (HH:MM:SS)"
+        required: false
+        default: ""
+        type: string
+  push:
+    branches:
+      - v0.2-cloud-runner
+    paths:
+      - cloud_request.json
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    name: Fetch media on GitHub-hosted runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: "v2.x"
+
+      - name: Install yt-dlp
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade "yt-dlp[default]"
+          python -m yt_dlp --version
+          deno --version
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+
+      - name: Resolve request
+        id: request
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_URL: ${{ inputs.youtube_url }}
+          INPUT_START: ${{ inputs.start_time }}
+          INPUT_END: ${{ inputs.end_time }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          if os.environ["EVENT_NAME"] == "workflow_dispatch":
+              req = {
+                  "youtube_url": os.environ.get("INPUT_URL", ""),
+                  "start_time": os.environ.get("INPUT_START", ""),
+                  "end_time": os.environ.get("INPUT_END", ""),
+                  "question": "",
+                  "request_id": f"manual-{os.environ.get('GITHUB_RUN_ID', '')}",
+              }
+          else:
+              req = json.loads(Path("cloud_request.json").read_text(encoding="utf-8"))
+
+          start = req.get("start_time", "") or ""
+          end = req.get("end_time", "") or ""
+          if bool(start) != bool(end):
+              raise SystemExit("start_time and end_time must be provided together")
+          if not req.get("youtube_url"):
+              raise SystemExit("youtube_url is required")
+
+          env_path = Path(os.environ["GITHUB_ENV"])
+          with env_path.open("a", encoding="utf-8") as f:
+              f.write(f"YOUTUBE_URL={req['youtube_url']}\n")
+              f.write(f"START_TIME={start}\n")
+              f.write(f"END_TIME={end}\n")
+
+          Path("analysis_request.json").write_text(
+              json.dumps(req, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Fetch video
+        shell: bash
+        run: |
+          python scripts/fetch_video.py "$YOUTUBE_URL"             --start "$START_TIME"             --end "$END_TIME"             --output-dir output
+          cp analysis_request.json output/analysis_request.json
+
+      - name: Probe fetched media
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          out = Path("output")
+          media = [
+              p for p in out.glob("video.*")
+              if p.is_file()
+              and p.suffix not in {".json", ".part", ".ytdl"}
+              and not p.name.endswith(".info.json")
+          ]
+          result = {"media_file": None, "ffprobe": None}
+          if media:
+              target = media[0]
+              result["media_file"] = target.name
+              proc = subprocess.run(
+                  ["ffprobe", "-v", "error", "-show_format", "-show_streams", "-of", "json", str(target)],
+                  text=True,
+                  capture_output=True,
+              )
+              if proc.returncode == 0:
+                  result["ffprobe"] = json.loads(proc.stdout)
+              else:
+                  result["ffprobe_error"] = proc.stderr
+          out.mkdir(exist_ok=True)
+          (out / "media_probe.json").write_text(
+              json.dumps(result, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Show generated files
+        if: always()
+        run: |
+          if [ -d output ]; then
+            find output -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
+          fi
+
+      - name: Upload result artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-cloud-${{ github.run_id }}
+          path: output/
+          if-no-files-found: warn
+          retention-days: 1
+          compression-level: 0
