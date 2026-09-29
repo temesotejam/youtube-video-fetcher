@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "youtube-cloudflare-browser-fetch",
+  "main": "src/fetch.js",
+  "compatibility_date": "2026-09-29",
+  "workers_dev": true,
+  "browser": {
+    "binding": "BROWSER"
+  }
+}
