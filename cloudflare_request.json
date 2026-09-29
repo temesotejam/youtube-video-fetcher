@@ -1,0 +1,6 @@
+{
+  "request_id": "template",
+  "youtube_url": "https://youtu.be/2NJdNKJ9LPM",
+  "question": "Template request. Replace this URL/question for a real ChatGPT-triggered fetch.",
+  "note": "Cloudflare Browser Run path; no local PC required."
+}
