@@ -404,6 +404,64 @@ async function releaseBrowser(browser, reused) {
   }
 }
 
+
+async function browserDiagnostics(env) {
+  let limits = null;
+  let history = [];
+  let sessions = [];
+
+  try {
+    limits = await puppeteer.limits(env.BROWSER);
+  } catch (error) {
+    limits = { error: error instanceof Error ? error.message : String(error) };
+  }
+
+  try {
+    history = await puppeteer.history(env.BROWSER);
+  } catch (error) {
+    history = [{ error: error instanceof Error ? error.message : String(error) }];
+  }
+
+  try {
+    sessions = await puppeteer.sessions(env.BROWSER);
+  } catch (error) {
+    sessions = [{ error: error instanceof Error ? error.message : String(error) }];
+  }
+
+  const sanitizedHistory = Array.isArray(history)
+    ? history.slice(-10).map((item) => ({
+        startTime: item?.startTime ?? null,
+        endTime: item?.endTime ?? null,
+        durationMs:
+          Number.isFinite(Number(item?.startTime)) && Number.isFinite(Number(item?.endTime))
+            ? Number(item.endTime) - Number(item.startTime)
+            : null,
+        closeReasonText: item?.closeReasonText ?? null,
+        error: item?.error ?? null,
+      }))
+    : [];
+
+  return json({
+    ok: true,
+    limits: limits
+      ? {
+          allowedBrowserAcquisitions: limits.allowedBrowserAcquisitions ?? null,
+          maxConcurrentSessions: limits.maxConcurrentSessions ?? null,
+          timeUntilNextAllowedBrowserAcquisition:
+            limits.timeUntilNextAllowedBrowserAcquisition ?? null,
+          activeSessionCount: Array.isArray(limits.activeSessions)
+            ? limits.activeSessions.length
+            : null,
+          error: limits.error ?? null,
+        }
+      : null,
+    openSessionCount: Array.isArray(sessions)
+      ? sessions.filter((s) => s && !s.error).length
+      : null,
+    recentHistory: sanitizedHistory,
+  });
+}
+
 async function resolveFormats(browser, videoId = TEST_VIDEO_ID) {
   const page = await browser.newPage();
   try {
@@ -1033,6 +1091,9 @@ export default {
     }
     if (request.method === "GET" && url.pathname === "/api/status") {
       return await fetchStatus(request, env);
+    }
+    if (request.method === "GET" && url.pathname === "/browser-diagnostics") {
+      return await browserDiagnostics(env);
     }
 
     try {
