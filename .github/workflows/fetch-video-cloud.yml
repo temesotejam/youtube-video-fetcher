@@ -74,6 +74,21 @@ jobs:
           docker logs bgutil-provider || true
           exit 1
 
+      - name: Prepare optional YouTube authentication
+        shell: bash
+        env:
+          YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
+        run: |
+          if [ -n "$YOUTUBE_COOKIES_B64" ]; then
+            printf '%s' "$YOUTUBE_COOKIES_B64" | base64 --decode > youtube-cookies.txt
+            chmod 600 youtube-cookies.txt
+            echo "HAS_YOUTUBE_COOKIES=1" >> "$GITHUB_ENV"
+            echo "YouTube authentication: configured"
+          else
+            echo "HAS_YOUTUBE_COOKIES=0" >> "$GITHUB_ENV"
+            echo "YouTube authentication: anonymous fallback"
+          fi
+
       - name: Resolve request
         id: request
         shell: bash
@@ -121,7 +136,20 @@ jobs:
       - name: Fetch video
         shell: bash
         run: |
-          python scripts/fetch_video.py "$YOUTUBE_URL"             --start "$START_TIME"             --end "$END_TIME"             --player-client web_embedded             --player-skip webpage,configs             --output-dir output
+          if [ "$HAS_YOUTUBE_COOKIES" = "1" ]; then
+            python scripts/fetch_video.py "$YOUTUBE_URL" \
+              --start "$START_TIME" \
+              --end "$END_TIME" \
+              --cookies youtube-cookies.txt \
+              --output-dir output
+          else
+            python scripts/fetch_video.py "$YOUTUBE_URL" \
+              --start "$START_TIME" \
+              --end "$END_TIME" \
+              --player-client web_embedded \
+              --player-skip webpage,configs \
+              --output-dir output
+          fi
           cp analysis_request.json output/analysis_request.json
 
       - name: Probe fetched media
@@ -182,7 +210,9 @@ jobs:
           retention-days: 1
           compression-level: 0
 
-      - name: Stop PO token provider
+      - name: Clean secrets and stop PO token provider
         if: always()
         shell: bash
-        run: docker rm -f bgutil-provider || true
+        run: |
+          rm -f youtube-cookies.txt
+          docker rm -f bgutil-provider || true
