@@ -2,6 +2,11 @@ name: Test full VISIONOS media fetch
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - experimental-cloudflare-free-browser
+    paths:
+      - ".github/workflows/test-visionos-stream-static.yml"
 
 permissions:
   contents: read
