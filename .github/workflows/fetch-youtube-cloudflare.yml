@@ -105,19 +105,10 @@ jobs:
           print(f"video_id={video_id}")
           PY
 
-      - name: Deploy Cloudflare Browser Worker
-        id: deploy
-        uses: cloudflare/wrangler-action@v4
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: cloudflare-fetch
-          command: deploy --config wrangler.jsonc
-
       - name: Fetch media metadata
         shell: bash
         env:
-          BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
+          BASE_URL: https://youtube-cloudflare-browser-fetch.temesotejam-t265.workers.dev
         run: |
           set -euo pipefail
           mkdir -p output
@@ -180,7 +171,7 @@ jobs:
       - name: Fetch video and audio in bounded ranges
         shell: bash
         env:
-          BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
+          BASE_URL: https://youtube-cloudflare-browser-fetch.temesotejam-t265.workers.dev
         run: |
           set -euo pipefail
           python3 - <<'PY'
