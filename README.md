@@ -106,6 +106,51 @@ X64
 6. 必要なら `start_time` と `end_time` を指定します。
 7. 実行後、`youtube-video-*` Artifactを利用します。
 
+
+## Web UI / API
+
+Cloudflare WorkerにはWeb UIとAPIもあります。
+
+```text
+https://youtube-cloudflare-browser-fetch.temesotejam-t265.workers.dev/
+```
+
+Web UI/APIから取得ジョブを投入するには、Worker側に次の2つのCloudflare Secretsを設定します。
+
+- `GITHUB_FETCH_TOKEN`
+  - GitHub fine-grained personal access token
+  - Repository access: `temesotejam/youtube-video-fetcher` のみ
+  - Repository permissions:
+    - Contents: Read and write
+    - Actions: Read-only
+- `FETCH_API_KEY`
+  - Web UI/APIの利用者認証用の任意の長いランダム文字列
+  - ブラウザ側コードには埋め込まれず、リクエスト時の `X-API-Key` と照合します
+
+API:
+
+```http
+POST /api/fetch
+X-API-Key: <FETCH_API_KEY>
+Content-Type: application/json
+
+{
+  "youtube_url": "https://youtu.be/...",
+  "question": "任意の解析メモ"
+}
+```
+
+成功時は `request_id`、GitHub commit SHA、status endpointを返します。
+
+```http
+GET /api/status?sha=<commit_sha>
+X-API-Key: <FETCH_API_KEY>
+```
+
+status APIは対応するGitHub Actions runを探し、実行状態、完了結果、Actions/Artifactへのリンクを返します。
+
+ページ/APIからGitHubを直接workflow dispatchするのではなく、`cloudflare_request.json` をGitHub Contents APIで更新します。そのcommitが既存のpush triggerを起動するため、ChatGPTからの運用とWeb UIからの運用が同じ取得パイプラインに合流します。
+
 ## Version 0.3 / Cloudflare Browser RunによるPC不要経路
 
 2026-09-29に、Cloudflare Browser Runを使った取得経路で、**ローカルPC・self-hosted runner・YouTube Cookieなし**のフル動画取得を確認しました。
