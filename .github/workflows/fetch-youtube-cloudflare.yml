@@ -1,0 +1,301 @@
+name: Fetch YouTube via Cloudflare
+
+on:
+  workflow_dispatch:
+    inputs:
+      youtube_url:
+        description: "YouTube video URL"
+        required: true
+        type: string
+      question:
+        description: "Optional analysis question"
+        required: false
+        default: ""
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - cloudflare_request.json
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    name: Fetch media without local PC
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          cd cloudflare-fetch
+          npm install --no-audit --no-fund
+          node --check src/fetch.js
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+
+      - name: Resolve request
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_URL: ${{ inputs.youtube_url }}
+          INPUT_QUESTION: ${{ inputs.question }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.parse
+          from pathlib import Path
+
+          if os.environ["EVENT_NAME"] == "workflow_dispatch":
+              req = {
+                  "request_id": f"manual-{os.environ.get('GITHUB_RUN_ID', '')}",
+                  "youtube_url": os.environ.get("INPUT_URL", ""),
+                  "question": os.environ.get("INPUT_QUESTION", ""),
+                  "note": "Cloudflare Browser Run fetch",
+              }
+          else:
+              req = json.loads(Path("cloudflare_request.json").read_text(encoding="utf-8"))
+
+          url = str(req.get("youtube_url", "")).strip()
+          if not url:
+              raise SystemExit("youtube_url is required")
+
+          parsed = urllib.parse.urlparse(url)
+          host = parsed.netloc.lower().split(":")[0]
+          video_id = None
+
+          if host in {"youtu.be", "www.youtu.be"}:
+              video_id = parsed.path.strip("/").split("/")[0]
+          elif host.endswith("youtube.com"):
+              if parsed.path == "/watch":
+                  video_id = urllib.parse.parse_qs(parsed.query).get("v", [None])[0]
+              else:
+                  parts = [p for p in parsed.path.split("/") if p]
+                  if len(parts) >= 2 and parts[0] in {"shorts", "embed", "live"}:
+                      video_id = parts[1]
+
+          if not video_id and re.fullmatch(r"[A-Za-z0-9_-]{11}", url):
+              video_id = url
+
+          if not video_id or not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
+              raise SystemExit(f"Unable to extract a YouTube video ID from: {url}")
+
+          req["video_id"] = video_id
+          Path("analysis_request.json").write_text(
+              json.dumps(req, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
+
+          env_path = Path(os.environ["GITHUB_ENV"])
+          with env_path.open("a", encoding="utf-8") as f:
+              f.write(f"VIDEO_ID={video_id}\n")
+              f.write(f"REQUEST_ID={req.get('request_id', '')}\n")
+
+          print(f"video_id={video_id}")
+          PY
+
+      - name: Deploy Cloudflare Browser Worker
+        id: deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare-fetch
+          command: deploy --config wrangler.jsonc
+
+      - name: Fetch media metadata
+        shell: bash
+        env:
+          BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          sleep 3
+          curl -fsS --max-time 60             "${BASE_URL%/}/meta?video_id=$VIDEO_ID"             -o output/source_meta.json
+          cat output/source_meta.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d = json.loads(Path("output/source_meta.json").read_text())
+          if not d.get("video") or not d.get("audio"):
+              raise SystemExit(f"Missing video/audio formats: {d}")
+          print("video_bytes", d["video"]["contentLength"])
+          print("audio_bytes", d["audio"]["contentLength"])
+          PY
+
+      - name: Fetch video and audio in bounded ranges
+        shell: bash
+        env:
+          BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import time
+          import urllib.parse
+          from pathlib import Path
+
+          base = os.environ["BASE_URL"].rstrip("/")
+          video_id = os.environ["VIDEO_ID"]
+          chunk = 16 * 1024 * 1024
+          session_gap = 20
+          meta = json.loads(Path("output/source_meta.json").read_text())
+
+          def fetch_chunk(kind, start, length, index):
+              part = Path(f"output/{kind}-{index:03d}.part")
+              headers = Path(f"output/{kind}-{index:03d}.headers.txt")
+              query = urllib.parse.urlencode({
+                  "video_id": video_id,
+                  "kind": kind,
+                  "start": start,
+                  "length": length,
+              })
+              url = f"{base}/range?{query}"
+
+              for attempt in range(1, 4):
+                  print(
+                      f"fetch {kind} chunk={index} start={start} "
+                      f"length={length} attempt={attempt}",
+                      flush=True,
+                  )
+                  proc = subprocess.run(
+                      [
+                          "curl", "-sS", "--max-time", "180",
+                          "-D", str(headers),
+                          "-o", str(part),
+                          "-w", "%{http_code}",
+                          url,
+                      ],
+                      text=True,
+                      capture_output=True,
+                  )
+                  status = proc.stdout.strip()[-3:] if proc.stdout.strip() else ""
+                  size = part.stat().st_size if part.exists() else 0
+
+                  if proc.returncode == 0 and status == "200" and size == length:
+                      return part
+
+                  print(
+                      f"retry needed: rc={proc.returncode} status={status} size={size}",
+                      flush=True,
+                  )
+                  if part.exists() and size < 4096:
+                      try:
+                          print(part.read_text(encoding="utf-8", errors="replace"), flush=True)
+                      except Exception:
+                          pass
+                  if attempt < 3:
+                      time.sleep(session_gap)
+
+              raise SystemExit(
+                  f"Failed {kind} chunk {index}: expected {length} bytes"
+              )
+
+          def fetch_kind(kind, suffix):
+              total = int(meta[kind]["contentLength"])
+              final = Path(f"output/{kind}-only.{suffix}")
+              final.write_bytes(b"")
+              start = 0
+              index = 0
+
+              while start < total:
+                  length = min(chunk, total - start)
+                  part = fetch_chunk(kind, start, length, index)
+                  with final.open("ab") as out, part.open("rb") as src:
+                      while True:
+                          buf = src.read(1024 * 1024)
+                          if not buf:
+                              break
+                          out.write(buf)
+                  part.unlink()
+                  start += length
+                  index += 1
+                  if start < total:
+                      print(
+                          f"Waiting {session_gap}s before next Browser Run session...",
+                          flush=True,
+                      )
+                      time.sleep(session_gap)
+
+              actual = final.stat().st_size
+              if actual != total:
+                  raise SystemExit(
+                      f"final {kind} size mismatch: expected {total}, got {actual}"
+                  )
+              print(f"{kind} complete bytes={actual} chunks={index}", flush=True)
+
+          print(f"Waiting {session_gap}s after metadata Browser Run session...", flush=True)
+          time.sleep(session_gap)
+          fetch_kind("video", "mp4")
+          print(f"Waiting {session_gap}s before switching to audio...", flush=True)
+          time.sleep(session_gap)
+          fetch_kind("audio", "m4a")
+          PY
+
+      - name: Remux and verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          ffmpeg -y -loglevel warning             -i output/video-only.mp4             -i output/audio-only.m4a             -map 0:v:0 -map 1:a:0             -c copy output/video.mp4
+
+          ffprobe -v error             -show_entries format=duration,size             -show_entries stream=index,codec_type,codec_name,width,height             -of json output/video.mp4 | tee output/ffprobe.json
+
+          test -s output/video.mp4
+          rm -f output/video-only.mp4 output/audio-only.m4a output/*.headers.txt
+
+      - name: Build manifest
+        shell: bash
+        run: |
+          cp analysis_request.json output/analysis_request.json
+          python3 - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          req = json.loads(Path("analysis_request.json").read_text())
+          probe = json.loads(Path("output/ffprobe.json").read_text())
+          source = json.loads(Path("output/source_meta.json").read_text())
+          video = Path("output/video.mp4")
+
+          manifest = {
+              "transport": "cloudflare-browser-run",
+              "request_id": req.get("request_id"),
+              "source_url": req.get("youtube_url"),
+              "video_id": req.get("video_id"),
+              "created_at_utc": datetime.now(timezone.utc).isoformat(),
+              "media_file": "video.mp4",
+              "media_size_bytes": video.stat().st_size,
+              "ffprobe": probe,
+              "source_meta": source,
+              "local_pc_required": False,
+          }
+          Path("output/manifest.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Show result
+        run: find output -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
+
+      - name: Upload result artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-cloudflare-${{ github.run_id }}
+          path: output/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
