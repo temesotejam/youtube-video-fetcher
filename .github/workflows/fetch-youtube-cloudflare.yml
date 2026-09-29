@@ -121,8 +121,51 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p output
-          sleep 3
-          curl -fsS --max-time 60             "${BASE_URL%/}/meta?video_id=$VIDEO_ID"             -o output/source_meta.json
+          sleep 5
+
+          python3 - <<'PY'
+          import os
+          import subprocess
+          import time
+          from pathlib import Path
+
+          base = os.environ["BASE_URL"].rstrip("/")
+          video_id = os.environ["VIDEO_ID"]
+          out = Path("output/source_meta.json")
+
+          waits = [0, 60, 90]
+          for attempt, wait_s in enumerate(waits, start=1):
+              if wait_s:
+                  print(f"Waiting {wait_s}s before metadata retry...", flush=True)
+                  time.sleep(wait_s)
+
+              proc = subprocess.run(
+                  [
+                      "curl", "-sS", "--max-time", "60",
+                      "-o", str(out),
+                      "-w", "%{http_code}",
+                      f"{base}/meta?video_id={video_id}",
+                  ],
+                  text=True,
+                  capture_output=True,
+              )
+              status = proc.stdout.strip()[-3:] if proc.stdout.strip() else ""
+              body = out.read_text(encoding="utf-8", errors="replace") if out.exists() else ""
+
+              print(
+                  f"metadata attempt={attempt} rc={proc.returncode} status={status}",
+                  flush=True,
+              )
+
+              if proc.returncode == 0 and status == "200":
+                  break
+
+              if body:
+                  print(body[:2000], flush=True)
+          else:
+              raise SystemExit("Failed to fetch media metadata after retries")
+          PY
+
           cat output/source_meta.json
           python3 - <<'PY'
           import json
