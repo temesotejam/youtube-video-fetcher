@@ -19,6 +19,7 @@ on:
         type: string
   push:
     branches:
+      - main
       - v0.2-cloud-runner
     paths:
       - cloud_request.json
@@ -46,14 +47,32 @@ jobs:
         with:
           deno-version: "v2.x"
 
-      - name: Install yt-dlp
+      - name: Install media tools and yt-dlp
+        shell: bash
         run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
           python -m pip install --upgrade pip
-          python -m pip install --upgrade "yt-dlp[default]"
+          python -m pip install --upgrade "yt-dlp[default]" bgutil-ytdlp-pot-provider
           python -m yt_dlp --version
           deno --version
           ffmpeg -version | head -n 1
           ffprobe -version | head -n 1
+
+      - name: Start PO token provider
+        shell: bash
+        run: |
+          docker run --name bgutil-provider -d --init             -p 127.0.0.1:4416:4416             brainicism/bgutil-ytdlp-pot-provider:latest
+          for i in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:4416/ping >/dev/null 2>&1; then
+              echo "PO token provider is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "PO token provider did not become ready; showing container logs"
+          docker logs bgutil-provider || true
+          exit 1
 
       - name: Resolve request
         id: request
@@ -102,7 +121,7 @@ jobs:
       - name: Fetch video
         shell: bash
         run: |
-          python scripts/fetch_video.py "$YOUTUBE_URL"             --start "$START_TIME"             --end "$END_TIME"             --output-dir output
+          python scripts/fetch_video.py "$YOUTUBE_URL"             --start "$START_TIME"             --end "$END_TIME"             --player-client mweb             --output-dir output
           cp analysis_request.json output/analysis_request.json
 
       - name: Probe fetched media
@@ -148,6 +167,11 @@ jobs:
             find output -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
           fi
 
+      - name: Show PO token provider logs on failure
+        if: failure()
+        shell: bash
+        run: docker logs bgutil-provider || true
+
       - name: Upload result artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -157,3 +181,8 @@ jobs:
           if-no-files-found: warn
           retention-days: 1
           compression-level: 0
+
+      - name: Stop PO token provider
+        if: always()
+        shell: bash
+        run: docker rm -f bgutil-provider || true
