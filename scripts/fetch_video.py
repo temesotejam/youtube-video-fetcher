@@ -31,6 +31,11 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional comma-separated YouTube player requests to skip, e.g. webpage,configs.",
     )
+    parser.add_argument(
+        "--cookies",
+        default="",
+        help="Optional Netscape-format cookies.txt path. Never store this file in the repository.",
+    )
     return parser.parse_args()
 
 
@@ -67,6 +72,9 @@ def main() -> int:
         str(output_dir / "video.%(ext)s"),
     ]
 
+    if args.cookies:
+        command.extend(["--cookies", args.cookies])
+
     extractor_parts = []
     if args.player_client:
         extractor_parts.append(f"player_client={args.player_client}")
@@ -96,6 +104,7 @@ def main() -> int:
     print("Requested section:", f"{args.start} - {args.end}" if args.start else "full video")
     print("Player client:", args.player_client or "yt-dlp default")
     print("Player skip:", args.player_skip or "none")
+    print("Authentication:", "cookies" if args.cookies else "anonymous")
 
     with log_path.open("w", encoding="utf-8") as log_file:
         process = subprocess.Popen(
@@ -123,6 +132,7 @@ def main() -> int:
         "requested_end": args.end or None,
         "player_client": args.player_client or None,
         "player_skip": args.player_skip or None,
+        "authenticated": bool(args.cookies),
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "yt_dlp_exit_code": return_code,
         "files": files,
