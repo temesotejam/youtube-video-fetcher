@@ -70,7 +70,7 @@ jobs:
 
           base=os.environ["BASE_URL"].rstrip("/")
           video_id="2NJdNKJ9LPM"
-          chunk=4*1024*1024
+          chunk=16*1024*1024
           meta=json.loads(Path("output/meta.json").read_text())
 
           def fetch_kind(kind, suffix):
@@ -91,7 +91,7 @@ jobs:
                   url=f"{base}/range?{q}"
                   print(f"fetch {kind} chunk={index} start={start} length={length}", flush=True)
                   p=subprocess.run(
-                      ["curl","-fsS","--retry","2","--retry-delay","2","--max-time","60",url,"-o",str(part)],
+                      ["curl","-fsS","--retry","2","--retry-delay","2","--max-time","180",url,"-o",str(part)],
                       text=True,
                   )
                   if p.returncode != 0:
@@ -109,16 +109,16 @@ jobs:
                   start += length
                   index += 1
                   if start < total:
-                      print("Waiting 5 seconds before next Browser Run session...", flush=True)
-                      time.sleep(5)
+                      print("Waiting 20 seconds before next Browser Run session...", flush=True)
+                      time.sleep(20)
               actual=final.stat().st_size
               if actual != total:
                   raise SystemExit(f"final {kind} size mismatch: expected {total}, got {actual}")
               print(f"{kind} complete bytes={actual} chunks={index}", flush=True)
 
           import time
-          print("Waiting 5 seconds after metadata Browser Run session...", flush=True)
-          time.sleep(5)
+          print("Waiting 20 seconds after metadata Browser Run session...", flush=True)
+          time.sleep(20)
           fetch_kind("video","mp4")
           fetch_kind("audio","m4a")
           PY
