@@ -395,15 +395,13 @@ async function acquireBrowser(env) {
 
 async function releaseBrowser(browser, reused) {
   if (!browser) return;
-  if (reused && typeof browser.disconnect === "function") {
-    await browser.disconnect().catch(() => {});
-    return;
-  }
   if (typeof browser.disconnect === "function") {
     await browser.disconnect().catch(() => {});
     return;
   }
-  await releaseBrowser(browser, reused);
+  if (typeof browser.close === "function") {
+    await browser.close().catch(() => {});
+  }
 }
 
 async function resolveFormats(browser, videoId = TEST_VIDEO_ID) {
