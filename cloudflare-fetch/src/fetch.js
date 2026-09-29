@@ -21,14 +21,19 @@ function html(body, status = 200) {
   });
 }
 
-function unauthorized() {
-  return json({ ok: false, error: "unauthorized" }, 401);
+function unauthorized(error = "unauthorized") {
+  return json({ ok: false, error }, 401);
 }
 
-function validApiKey(request, env) {
-  if (!env.FETCH_API_KEY) return false;
-  const supplied = request.headers.get("X-API-Key") || "";
-  return supplied.length > 0 && supplied === env.FETCH_API_KEY;
+function apiKeyCheck(request, env) {
+  const configured = String(env.FETCH_API_KEY || "").trim();
+  if (!configured) return { ok: false, error: "fetch_api_key_not_configured" };
+
+  const supplied = String(request.headers.get("X-API-Key") || "").trim();
+  if (!supplied) return { ok: false, error: "access_key_missing" };
+  if (supplied !== configured) return { ok: false, error: "access_key_mismatch" };
+
+  return { ok: true };
 }
 
 function encodeBase64Utf8(text) {
@@ -82,7 +87,8 @@ async function githubRequest(env, path, init = {}) {
 }
 
 async function createFetchRequest(request, env) {
-  if (!validApiKey(request, env)) return unauthorized();
+  const keyCheck = apiKeyCheck(request, env);
+  if (!keyCheck.ok) return unauthorized(keyCheck.error);
 
   let body;
   try {
@@ -162,7 +168,8 @@ async function createFetchRequest(request, env) {
 }
 
 async function fetchStatus(request, env) {
-  if (!validApiKey(request, env)) return unauthorized();
+  const keyCheck = apiKeyCheck(request, env);
+  if (!keyCheck.ok) return unauthorized(keyCheck.error);
 
   const url = new URL(request.url);
   const sha = String(url.searchParams.get("sha") || "").trim();
@@ -259,7 +266,7 @@ let timer = null;
 
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
-  headers.set("X-API-Key", $("key").value);
+  headers.set("X-API-Key", $("key").value.trim());
   if (options.body) headers.set("Content-Type", "application/json");
   const r = await fetch(path, { ...options, headers });
   const data = await r.json().catch(() => ({ ok:false, error:"invalid_response" }));
