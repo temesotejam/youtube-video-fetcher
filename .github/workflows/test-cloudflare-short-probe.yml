@@ -45,20 +45,16 @@ jobs:
           mkdir -p output
           CODE=$(curl -sS --max-time 90 -D output/probe.headers.txt -o output/probe.bin -w "%{http_code}" "${BASE_URL%/}/probe/video")
           echo "http_code=$CODE"
-          echo "--- headers ---"
           cat output/probe.headers.txt
-          echo "--- size ---"
-          stat -c%s output/probe.bin
+          SIZE=$(stat -c%s output/probe.bin)
+          echo "probe_size=$SIZE"
           if [ "$CODE" != "200" ]; then
-            echo "--- response body ---"
-            python3 - <<'PY'
-from pathlib import Path
-p=Path("output/probe.bin")
-print(p.read_bytes()[:2000].decode("utf-8", errors="replace"))
-PY
+            echo "--- response body (first 2000 bytes) ---"
+            head -c 2000 output/probe.bin || true
+            echo
             exit 1
           fi
-          test "$(stat -c%s output/probe.bin)" -eq 2097152
+          test "$SIZE" -eq 2097152
           grep -qi '^x-capture-method: visionos-cdp-2mb-probe' output/probe.headers.txt
 
       - name: Upload probe artifact
