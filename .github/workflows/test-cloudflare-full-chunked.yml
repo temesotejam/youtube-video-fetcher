@@ -108,11 +108,17 @@ jobs:
                   part.unlink()
                   start += length
                   index += 1
+                  if start < total:
+                      print("Waiting 20 seconds before next Browser Run session...", flush=True)
+                      time.sleep(20)
               actual=final.stat().st_size
               if actual != total:
                   raise SystemExit(f"final {kind} size mismatch: expected {total}, got {actual}")
               print(f"{kind} complete bytes={actual} chunks={index}", flush=True)
 
+          import time
+          print("Waiting 20 seconds after metadata Browser Run session...", flush=True)
+          time.sleep(20)
           fetch_kind("video","mp4")
           fetch_kind("audio","m4a")
           PY
