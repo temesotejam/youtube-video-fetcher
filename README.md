@@ -106,6 +106,27 @@ X64
 6. 必要なら `start_time` と `end_time` を指定します。
 7. 実行後、`youtube-video-*` Artifactを利用します。
 
+## Version 0.2 / PC不要のクラウド取得経路
+
+GitHub-hosted Ubuntu runnerで動画を取得する `.github/workflows/fetch-video-cloud.yml` を追加しています。通常はユーザーPCを起動しておく必要はありません。
+
+クラウドIPがYouTubeのbot判定に入る場合に備え、Workflowは次の順で動作します。
+
+1. GitHub Actions Secret `YOUTUBE_COOKIES_B64` が設定されていれば、そこから一時的な `cookies.txt` を復元して認証付きで取得します。
+2. Secretがない場合は、匿名の `web_embedded` 経路を試します。
+3. PO Token Providerも同じrunner内で起動します。
+4. CookieファイルはArtifactへ含めず、最後に必ず削除します。
+
+Secretへ入れる値は、Netscape形式の `cookies.txt` 全体をBase64化した文字列です。Cookie本文をリポジトリ、request JSON、Issue、ログへ直接貼らないでください。
+
+この設計では、認証情報を一度GitHub Secretへ登録した後の通常運用は、
+
+```text
+YouTube URL -> ChatGPT -> GitHub Actions -> GitHub-hosted runner -> Artifact -> ChatGPT
+```
+
+となり、取得用PCやself-hosted runnerの常時起動は不要です。
+
 ## Artifactに含まれるもの
 
 ChatGPT起動の主経路では、原則として次がArtifactへ入ります。
