@@ -28,6 +28,30 @@ YouTube captions and independent ASR are optional aids only.
 - The runner has Python 3.12 available as `py -3.12`.
 - Do not put private URLs, credentials, cookies, tokens, or secrets in request files because this repository is public.
 
+
+## Preferred PC-free path: Cloudflare Browser Run
+
+When the user wants ChatGPT to fetch a public YouTube video without relying on their local PC, prefer the Cloudflare path.
+
+1. Read `cloudflare_request.json`.
+2. Generate a unique `request_id`.
+3. Put the user's YouTube URL and analysis question in that file.
+4. Update `cloudflare_request.json` on `main`.
+5. This triggers `.github/workflows/fetch-youtube-cloudflare.yml`.
+6. Match the workflow run by the commit SHA from the request update.
+7. Wait for the run to finish.
+8. Retrieve the `youtube-cloudflare-<run_id>` Artifact.
+9. The Artifact contains the merged `video.mp4`, `ffprobe.json`, `source_meta.json`, `manifest.json`, and `analysis_request.json`.
+10. Analyze the actual media file.
+
+This path uses GitHub-hosted Ubuntu plus Cloudflare Browser Run. It does not require the user's local self-hosted runner and does not require YouTube cookies.
+
+Operational details:
+- media is fetched in bounded ranges up to 16 MiB;
+- a 20-second gap is used between Browser Run sessions to respect the free-tier browser start rate;
+- video and audio are fetched separately and remuxed with FFmpeg;
+- the old Windows self-hosted path remains available as a fallback.
+
 ## Standard procedure for a video-analysis request
 
 1. Read `request.schema.json` and the current `request.json`.
