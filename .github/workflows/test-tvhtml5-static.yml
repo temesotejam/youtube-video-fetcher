@@ -1,0 +1,50 @@
+name: Test static TVHTML5 Browser Run probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Browser Run dependency
+        working-directory: cloudflare-free-probe
+        run: npm install --no-audit --no-fund
+
+      - name: Check static TVHTML5 Worker syntax
+        working-directory: cloudflare-free-probe
+        run: node --check src/browser-mp4-tvhtml5-probe.js
+
+      - name: Deploy static TVHTML5 Worker
+        id: deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare-free-probe
+          command: deploy --config wrangler-tvhtml5-probe.jsonc
+
+      - name: Probe TVHTML5 player and range
+        env:
+          BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          set -euo pipefail
+          sleep 5
+          curl -fsS --max-time 120 "${BASE_URL%/}/probe/tvhtml5?v=2NJdNKJ9LPM" -o result.json
+          cat result.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('result.json').read_text())
+          print('playability_status=', data.get('player', {}).get('playability_status'))
+          print('direct_adaptive_count=', data.get('player', {}).get('direct_adaptive_count'))
+          print('ciphered_adaptive_count=', data.get('player', {}).get('ciphered_adaptive_count'))
+          print('selected_video=', data.get('player', {}).get('selected_video'))
+          print('range_probe=', data.get('range_probe'))
+          PY

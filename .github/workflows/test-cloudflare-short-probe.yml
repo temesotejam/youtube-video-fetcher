@@ -1,0 +1,86 @@
+name: Test short Cloudflare media probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experimental-cloudflare-free-browser
+    paths:
+      - "cloudflare-free-probe/src/browser-mp4-visionos-segmented-stream-probe.js"
+      - ".github/workflows/test-cloudflare-short-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Browser Run dependency
+        working-directory: cloudflare-free-probe
+        run: npm install --no-audit --no-fund
+
+      - name: Check Worker syntax
+        working-directory: cloudflare-free-probe
+        run: node --check src/browser-mp4-visionos-segmented-stream-probe.js
+
+      - name: Deploy probe Worker
+        id: deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare-free-probe
+          command: deploy --config wrangler-visionos-stream-probe.jsonc
+
+      - name: Fetch 2 MB video probe
+        env:
+          BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          set -euo pipefail
+          sleep 3
+          mkdir -p output
+          CODE=$(curl -sS --max-time 90 -D output/probe.headers.txt -o output/probe.bin -w "%{http_code}" "${BASE_URL%/}/probe/video")
+          echo "http_code=$CODE"
+          cat output/probe.headers.txt
+          SIZE=$(stat -c%s output/probe.bin)
+          echo "probe_size=$SIZE"
+          if [ "$CODE" != "200" ]; then
+            echo "--- response body (first 2000 bytes) ---"
+            head -c 2000 output/probe.bin || true
+            echo
+            exit 1
+          fi
+          test "$SIZE" -eq 2097152
+          grep -qi '^x-capture-method: visionos-cdp-2mb-probe' output/probe.headers.txt
+
+      - name: Fetch 2 MB dynamic range
+        env:
+          BASE_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          set -euo pipefail
+          sleep 5
+          CODE=$(curl -sS --max-time 90 -D output/range.headers.txt -o output/range.bin -w "%{http_code}" "${BASE_URL%/}/range?video_id=2NJdNKJ9LPM&kind=video&start=0&length=2097152")
+          echo "range_http_code=$CODE"
+          cat output/range.headers.txt
+          SIZE=$(stat -c%s output/range.bin)
+          echo "range_size=$SIZE"
+          if [ "$CODE" != "200" ]; then
+            echo "--- response body ---"
+            head -c 2000 output/range.bin || true
+            echo
+            exit 1
+          fi
+          test "$SIZE" -eq 2097152
+          grep -qi '^x-capture-method: visionos-cdp-bounded-range' output/range.headers.txt
+
+      - name: Upload probe artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-cloudflare-short-probe
+          retention-days: 1
+          path: output/

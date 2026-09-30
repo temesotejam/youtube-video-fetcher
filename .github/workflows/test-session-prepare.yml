@@ -1,0 +1,51 @@
+name: Diagnose persistent Browser session prepare
+
+on:
+  push:
+    branches:
+      - experimental-cloudflare-free-browser
+    paths:
+      - ".github/workflows/test-session-prepare.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Show prepare error without exposing session data
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Call session prepare once
+        run: |
+          python3 - <<'PY'
+          import json
+          import urllib.error
+          import urllib.request
+
+          url = (
+              'https://youtube-free-browser-probe.temesotejam-t265.workers.dev/'
+              'session/prepare?v=2NJdNKJ9LPM'
+          )
+          request = urllib.request.Request(
+              url,
+              headers={'User-Agent': 'youtube-video-fetcher-prepare-diagnostic/0.1'},
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  payload = json.loads(response.read().decode('utf-8'))
+                  print(f'worker_http_status={response.status}')
+                  print(f'result={payload.get("result")}')
+                  print(f'page_http_status={payload.get("page_http_status")}')
+                  print(f'player_http_status={payload.get("player_http_status")}')
+                  print(f'playability_status={payload.get("playability_status")}')
+                  print(f'session_id_present={bool(payload.get("session_id"))}')
+                  print(f'n_challenge_present={bool(payload.get("n_challenge"))}')
+                  print(f'player_js_url_present={bool(payload.get("player_js_url"))}')
+          except urllib.error.HTTPError as exc:
+              body = exc.read().decode('utf-8', errors='replace')
+              print(f'worker_http_status={exc.code}')
+              print(f'worker_error_body={body[:4096]}')
+              raise SystemExit(1)
+          PY
